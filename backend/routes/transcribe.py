@@ -2,11 +2,9 @@ import os
 import tempfile
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from starlette.concurrency import run_in_threadpool
 
 from config import DEBUG_VOICE_PIPELINE
 from services.transcription import transcribe_audio, TranscriptionError
-from services.query_normalizer import normalize_query
 
 router = APIRouter()
 
@@ -34,9 +32,10 @@ async def transcribe(audio: UploadFile = File(...), language_hint: str | None = 
             detail="Recording is too long. Please ask a shorter question."
         )
 
-    # Whisper decodes from a real file (via PyAV), so the upload is written
-    # to a temp file, transcribed, then always removed - nothing from the
-    # recording is kept on disk afterwards.
+    # PyAV (services/transcription.py's _convert_to_wav) decodes from a
+    # real file, so the upload is written to a temp file, transcribed,
+    # then always removed - nothing from the recording is kept on disk
+    # afterwards.
     suffix = os.path.splitext(audio.filename or "")[1] or ".webm"
     fd, temp_path = tempfile.mkstemp(suffix=suffix)
 
@@ -44,9 +43,7 @@ async def transcribe(audio: UploadFile = File(...), language_hint: str | None = 
         with os.fdopen(fd, "wb") as f:
             f.write(data)
 
-        raw_text, language, language_probability = await run_in_threadpool(
-            transcribe_audio, temp_path, language_hint
-        )
+        raw_text, clean_text, language = await transcribe_audio(temp_path, language_hint)
     except TranscriptionError as error:
         raise HTTPException(status_code=502, detail=str(error))
     finally:
@@ -58,17 +55,13 @@ async def transcribe(audio: UploadFile = File(...), language_hint: str | None = 
             detail="No speech was detected. Please try again."
         )
 
-    # Turns a messy/code-mixed raw transcript into a clean question - this
-    # is what actually enters the chat input, so the existing intent
-    # router and RAG pipeline see well-formed text just like typed input.
-    normalized_text = await normalize_query(raw_text, language)
-
-    response = {"transcript": normalized_text, "language": language}
+    # clean_text is already the code-mixed/business-domain-aware rewrite
+    # (see transcription.py's TRANSCRIBE_PROMPT) - this is what actually
+    # enters the chat input, so the existing intent router and RAG
+    # pipeline see well-formed text just like typed input.
+    response = {"transcript": clean_text, "language": language}
 
     if DEBUG_VOICE_PIPELINE:
-        response["debug"] = {
-            "raw_transcript": raw_text,
-            "language_probability": round(language_probability, 3),
-        }
+        response["debug"] = {"raw_transcript": raw_text}
 
     return response

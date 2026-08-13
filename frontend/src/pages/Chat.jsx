@@ -61,6 +61,14 @@ function Chat() {
     setSidebarOpen(false);
   }
 
+  function handleRenameSession(sessionId, newTitle) {
+    const title = newTitle.trim().replace(/\s+/g, " ") || "New Chat";
+
+    setSessions((previous) =>
+      previous.map((session) => (session.id === sessionId ? { ...session, title } : session))
+    );
+  }
+
   function handleDeleteSession(sessionId) {
     const remaining = sessions.filter((session) => session.id !== sessionId);
 
@@ -113,6 +121,7 @@ function Chat() {
           activeSessionId={activeSession.id}
           onNewChat={handleNewChat}
           onSelectSession={handleSelectSession}
+          onRenameSession={handleRenameSession}
           onDeleteSession={handleDeleteSession}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}

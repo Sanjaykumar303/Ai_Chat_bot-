@@ -22,6 +22,19 @@ const SPEECH_SYNTHESIS_SUPPORTED =
 const MAX_PDF_BYTES = 15 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
+// Auto-stops a recording that's run this long, so a forgotten-open mic
+// doesn't grow into a clip large/long enough for routes/transcribe.py's
+// MAX_AUDIO_BYTES (15 MB, "well over a minute of compressed audio") to
+// reject outright - stopping cleanly here always produces something
+// transcribable instead of risking that late rejection.
+const MAX_RECORDING_SECONDS = 90;
+
+function formatDuration(totalSeconds) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
 const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
@@ -129,6 +142,7 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
   const [autoSpeak, setAutoSpeak] = useState(false);
   const [detectedLanguage, setDetectedLanguage] = useState(null);
@@ -159,6 +173,7 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
 
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
+  const recordingIntervalRef = useRef(null);
   const attachmentPreviewUrlRef = useRef(null);
   // Captured once, at construction - lets the effect below tell "still
   // the untouched initial array" apart from "a real setMessages update
@@ -193,6 +208,7 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
     return () => {
       mediaRecorderRef.current?.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
+      clearInterval(recordingIntervalRef.current);
       if (SPEECH_SYNTHESIS_SUPPORTED) {
         window.speechSynthesis.cancel();
       }
@@ -268,8 +284,18 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
           autoGainControl: true,
         },
       });
-    } catch {
-      setError("Microphone access was denied. Please allow microphone access and try again.");
+    } catch (err) {
+      // getUserMedia's error .name distinguishes real denial from a
+      // missing/busy device - a blanket "access denied" message is
+      // actively misleading for the latter two, which no permission
+      // prompt would ever fix.
+      if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        setError("No microphone was found. Please connect a microphone and try again.");
+      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+        setError("The microphone is already in use by another application.");
+      } else {
+        setError("Microphone access was denied. Please allow microphone access and try again.");
+      }
       return;
     }
 
@@ -296,6 +322,17 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
     try {
       mediaRecorder.start();
       setRecording(true);
+      setRecordingSeconds(0);
+
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingSeconds((seconds) => {
+          const next = seconds + 1;
+          if (next >= MAX_RECORDING_SECONDS) {
+            stopRecording();
+          }
+          return next;
+        });
+      }, 1000);
     } catch {
       setError("Could not start voice input. Please try again.");
       streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -306,6 +343,7 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
   function stopRecording() {
     mediaRecorderRef.current?.stop();
     setRecording(false);
+    clearInterval(recordingIntervalRef.current);
   }
 
   // Uploads the recorded clip to POST /transcribe. No audio ever reaches
@@ -573,6 +611,12 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
       </div>
 
       {error && <p className="chat-error">{error}</p>}
+
+      {recording && (
+        <p className="chat-recording-status">
+          <span className="chat-recording-dot" /> Listening… {formatDuration(recordingSeconds)}
+        </p>
+      )}
 
       {detectedLanguage && (
         <p className="chat-detected-language">Heard: {languageLabel(detectedLanguage)}</p>

@@ -1,8 +1,37 @@
+import { useState } from "react";
+
 // Claude/ChatGPT-style chat session sidebar: "+ New Chat" plus a list of
-// past sessions (title + delete), most-recently-active first. Purely
-// presentational - Chat.jsx owns the actual session list and its
+// past sessions (title + rename + delete), most-recently-active first.
+// Purely presentational - Chat.jsx owns the actual session list and its
 // localStorage persistence (see utils/chatStorage.js).
-function ChatSidebar({ sessions, activeSessionId, onNewChat, onSelectSession, onDeleteSession, open, onClose }) {
+function ChatSidebar({ sessions, activeSessionId, onNewChat, onSelectSession, onRenameSession, onDeleteSession, open, onClose }) {
+
+  // The session currently being renamed (its title becomes an <input>
+  // in place of the plain label), or null when nothing's being edited.
+  const [editingSessionId, setEditingSessionId] = useState(null);
+  const [editingValue, setEditingValue] = useState("");
+
+  function startRename(event, session) {
+    event.stopPropagation(); // don't also trigger onSelectSession on the row
+    setEditingSessionId(session.id);
+    setEditingValue(session.title);
+  }
+
+  function commitRename() {
+    if (editingSessionId) {
+      onRenameSession(editingSessionId, editingValue);
+    }
+    setEditingSessionId(null);
+  }
+
+  function handleRenameKeyDown(event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitRename();
+    } else if (event.key === "Escape") {
+      setEditingSessionId(null);
+    }
+  }
 
   function handleDelete(event, sessionId) {
     event.stopPropagation(); // don't also trigger onSelectSession on the row
@@ -46,7 +75,31 @@ function ChatSidebar({ sessions, activeSessionId, onNewChat, onSelectSession, on
               className={`chat-session-item ${session.id === activeSessionId ? "active" : ""}`}
               onClick={() => onSelectSession(session.id)}
             >
-              <span className="chat-session-title">{session.title}</span>
+              {editingSessionId === session.id ? (
+                <input
+                  type="text"
+                  className="chat-session-title-input"
+                  value={editingValue}
+                  autoFocus
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => setEditingValue(event.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={handleRenameKeyDown}
+                />
+              ) : (
+                <span className="chat-session-title">{session.title}</span>
+              )}
+
+              <button
+                type="button"
+                className="chat-session-rename"
+                onClick={(event) => startRename(event, session)}
+                aria-label="Rename chat"
+                title="Rename chat"
+              >
+                ✏️
+              </button>
+
               <button
                 type="button"
                 className="chat-session-delete"

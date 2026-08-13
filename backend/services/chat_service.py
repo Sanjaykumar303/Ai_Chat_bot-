@@ -22,8 +22,9 @@ from services import document_store, pdf_retrieval
 
 logger = logging.getLogger("uvicorn")
 
-# Maps the short language code /transcribe detects (from Whisper) to a
-# name Gemini can follow a "answer in ___" instruction with. Only spoken
+# Maps the short language code /transcribe detects (via Gemini, see
+# services/transcription.py) to a name Gemini can follow a "answer in
+# ___" instruction with. Only spoken
 # languages this project's voice input explicitly targets are listed;
 # anything else (including plain "en" typed/spoken English) gets no
 # language instruction at all, which is today's exact behavior.

@@ -1,165 +1,205 @@
 """
-Local speech-to-text: turns a recorded audio clip into text using a small
-Whisper model that runs entirely on the CPU, no GPU or external API.
+Speech-to-text for voice input, via Gemini's native audio understanding
+(services/gemini_client.py's generate_from_audio) - replaces the local
+Whisper model (faster-whisper/ctranslate2) this app used previously.
+That model was CPU-only, limited to "tiny"/"base" accuracy on an 8GB
+machine, and hit a genuine upstream ctranslate2 packaging bug under
+Python 3.13. Gemini is already a hard dependency for every other part of
+this app (chat answers, OCR), is far stronger on accented/code-mixed
+Indian English, and needs no local model file at all.
 
-The model is loaded once per process (see main.py's startup hook) since
-loading it is the expensive part - transcribe_audio() only ever reuses the
-already-loaded instance.
-
-Whisper decodes one language per clip. It cannot "switch" languages mid
-utterance, so genuinely code-mixed Tamil-English speech will still come
-out imperfect here - that's a real limitation of the tiny model, not a
-config bug. What this module does control, and what was actually hurting
-accuracy, is condition_on_previous_text (see transcribe_audio below). The
-bigger fix for code-mixed speech - turning a messy raw transcript into a
-clean semantic query - lives in query_normalizer.py, one stage downstream.
+One Gemini call does transcription, language detection, AND the
+code-mixed/business-domain cleanup a separate query_normalizer.py stage
+used to do (now removed) - Gemini can reason about *meaning* while it
+transcribes, which a pure acoustic model like Whisper cannot, so
+collapsing this into one call is both simpler and more accurate, not
+just fewer round trips.
 """
 
+import io
 import logging
-import os
-import threading
+import re
+
+import av
+import numpy as np
 
 from config import DEBUG_VOICE_PIPELINE
+from services.gemini_client import generate_from_audio, GeminiError
 
 logger = logging.getLogger("uvicorn")
-
-# "tiny" is the smallest multilingual Whisper model (~75 MB on disk in
-# int8), chosen to fit comfortably on an 8 GB machine with no GPU. int8
-# quantization trades a little accuracy for much lower memory use and
-# faster CPU inference than float32. Configurable so "base" can be tried
-# later (meaningfully better multilingual/code-switch accuracy, still
-# CPU-friendly - see the note in transcribe_audio) without a code change.
-MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "tiny")
-DEVICE = "cpu"
-COMPUTE_TYPE = "int8"
-
-# One model instance is shared by every request, and faster-whisper's CPU
-# inference isn't guaranteed safe for concurrent calls on one instance, so
-# calls are serialized - the same pattern rag_service.py uses to guard its
-# shared FAISS index.
-_lock = threading.Lock()
-_model = None
 
 
 class TranscriptionError(Exception):
     """Raised with a user-facing message already attached."""
 
 
-def load_model():
-    """Load the Whisper model into memory. Safe to call more than once.
+# Maps the language_hint code the frontend's language dropdown sends
+# (see frontend/src/components/ChatBox.jsx's LANGUAGE_HINT_OPTIONS) to a
+# name Gemini can follow a "the speaker is speaking ___" instruction
+# with - same manual-override idea the old Whisper path had (auto-detect
+# is the default and works fine for most speech, but a user who already
+# knows which language they're about to speak can force it).
+LANGUAGE_HINT_NAMES = {
+    "en": "English",
+    "ta": "Tamil",
+    "kn": "Kannada",
+    "bn": "Bengali",
+}
 
-    Imports faster_whisper here rather than at module level so a broken
-    install (e.g. no working ctranslate2 build for the running Python
-    version) doesn't crash the whole app at import time - main.py's
-    startup hook already treats this function raising as non-fatal
-    ("Failure here doesn't crash startup"), and every other caller is
-    /transcribe, which should surface a clear per-request error instead
-    of the whole backend refusing to start.
-    """
+# PDF_CONTEXT-style framing isn't needed here (this prompt only ever sees
+# this app's own recorded audio, not third-party untrusted content), but
+# the business-domain steer below is deliberately the same one
+# query_normalizer.py used to apply as a separate, later stage: doing it
+# in the same pass the model already listens to the audio in means it
+# can weigh the actual acoustics against domain plausibility together,
+# rather than correcting a transcript it can no longer double-check
+# against the sound. Found via real testing: "what is the profit" was
+# coming back as "what do you prefer" - two ordinary, similar-sounding
+# phrases, but a domain hint fixes it now that Gemini knows the assistant
+# is business-focused.
+TRANSCRIBE_PROMPT = """You are transcribing a spoken question for a business/accounting assistant that answers questions about revenue, profit, loss, expenses, income, sales, payments, invoices, vouchers, and ledger balances.
 
-    global _model
+Listen to the attached audio and do three things:
+1. Detect the primary language spoken. Output its ISO 639-1 code (e.g. "en", "ta", "kn", "bn").
+2. Transcribe literally what was said.
+3. Rewrite the transcript as a single, clear, well-formed English question or instruction that preserves the speaker's exact intended meaning. The speaker may mix languages (Tamil-English, Kannada-English, Bengali-English) or speak in an informal Indian conversational style ("...na enna", "...pannunga", "bro", etc.) - untangle that into plain English. If a word is ambiguous or unclear but closely resembles one of the business terms listed above, prefer that business-domain interpretation - but never invent a business meaning from an otherwise clear, unrelated question.{language_hint_instruction}
 
-    if _model is not None:
-        return _model
+If the audio contains no intelligible speech (silence, noise, an unrelated sound), output NO_SPEECH for all three fields below instead.
 
-    with _lock:
-        if _model is None:
-            from faster_whisper import WhisperModel
+Output EXACTLY these three lines and nothing else - no markdown, no explanation:
+LANGUAGE: <iso 639-1 code, or NO_SPEECH>
+RAW: <literal transcript, or NO_SPEECH>
+QUESTION: <rewritten question, or NO_SPEECH>"""
 
-            logger.info(f"Loading Whisper model '{MODEL_SIZE}' ({DEVICE}/{COMPUTE_TYPE})...")
-            _model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
-            logger.info("Whisper model loaded.")
-
-    return _model
-
-
-def _clean_transcript(text):
-    """Mechanical cleanup only - collapses whitespace/newlines from segment
-    joins. Semantic cleanup (fixing meaning, not just spacing) is a
-    separate, deliberately heavier step - see query_normalizer.py."""
-
-    return " ".join(text.split())
+_RESPONSE_RE = re.compile(
+    r"LANGUAGE:\s*(?P<language>\S+)\s*"
+    r"RAW:\s*(?P<raw>.*?)\s*"
+    r"QUESTION:\s*(?P<question>.*)",
+    re.DOTALL,
+)
 
 
-def transcribe_audio(file_path, language_hint=None):
-    """Transcribe one audio file on disk. Returns (text, language, language_probability).
+# Root-mean-square amplitude (of int16 samples, max possible 32767) below
+# which a clip counts as silence/no-speech. Calibrated against real
+# clips: true digital silence measures 0, actual recorded speech (even a
+# quiet test clip) measured 1800-2700 - 150 sits with wide margin below
+# any real speech while still well above pure silence, so it won't
+# false-reject quiet-but-real speech.
+SILENCE_RMS_THRESHOLD = 150
 
-    language_hint: an explicit Whisper language code (e.g. "ta") to force,
-    bypassing auto-detection - pass None for full auto-detect (the
-    default for anyone who doesn't set it). Added because real-world
-    testing showed auto-detection under-uses Tamil on short/code-mixed
-    clips (small Whisper models are known to be English-biased under
-    auto-detect) - a manual override is the pragmatic fix for someone who
-    already knows which language they're about to speak, rather than
-    trying to out-tune detection further.
 
-    Configuration notes (audited per the project's own checklist):
+def _convert_to_wav(file_path):
+    """Decode whatever container/codec PyAV understands (webm/opus from
+    Chrome/Edge's MediaRecorder, mp4/aac from Safari, ...) into mono
+    16kHz WAV bytes - a format every Gemini deployment accepts, so this
+    app never has to track which of the many browser recording formats
+    Gemini's audio input does or doesn't support. faster-whisper already
+    depended on PyAV transitively for exactly this kind of decoding, so
+    it's kept as a direct dependency now that it's called explicitly.
 
-    - language=None (auto-detect) by default: still the right default for
-      anyone who leaves it on Auto. Whisper decodes a whole clip in ONE
-      language regardless; forcing a language for every user would make
-      genuinely English speech worse. language_hint above is the targeted
-      fix, not a change to the default.
-    - task="transcribe" (default): correct as-is. task="translate" would
-      convert everything to English text, destroying Tamil/Kannada/Bengali
-      content instead of preserving it.
-    - beam_size=5 (default): left alone. Tiny's bottleneck is model
-      capacity, not search width - a wider beam has little accuracy payoff
-      here and costs real CPU time.
-    - temperature (default fallback ladder [0, 0.2, ... 1.0]): left alone.
-      This is faster-whisper's built-in anti-repetition mechanism (it
-      retries a segment at a higher temperature if the deterministic pass
-      looks like a loop) - already doing useful work, no reason to override.
-    - vad_filter=True (already set): correct. Silero VAD trims silence so
-      it isn't transcribed as (often hallucinated) text.
-    - vad_parameters (default): left alone. Default min_silence_duration_ms
-      is 2000ms, well above a natural pause between code-switched clauses,
-      so it won't cut a real utterance in the middle.
-    - condition_on_previous_text=False (CHANGED from the default True):
-      this was the one real bug. With it True, each segment is decoded
-      conditioned on the previous segment's text - so once the model
-      mistranscribes an early code-switched phrase, later segments keep
-      drifting further from what was actually said instead of resetting.
-      Recordings here are short standalone questions, not a long lecture
-      that benefits from cross-segment context, so turning this off has
-      no downside and directly reduces this failure mode.
-    - word_timestamps: left at default (False) - not used anywhere.
-
-    A move from "tiny" to "base" is a real, meaningful step up specifically
-    for multilingual/code-switched accuracy (base has ~2x tiny's
-    parameters and noticeably better non-English WER in OpenAI's own
-    benchmarks), while still being CPU-only and comfortably light on 8GB
-    RAM. Set WHISPER_MODEL_SIZE=base in backend/.env to try it - no code
-    change needed.
-    """
+    Also returns whether the clip has any audible signal at all (see
+    SILENCE_RMS_THRESHOLD) - a real, observed failure mode is Gemini
+    confidently "transcribing" a plausible-sounding business question
+    out of pure silence when just asked to say NO_SPEECH instead. The
+    old Whisper path's vad_filter handled this deterministically at the
+    acoustic level; this is the same idea, computed directly from the
+    decoded samples so a silent clip never even reaches the Gemini call
+    that would otherwise hallucinate on it - matching this project's own
+    established preference for a deterministic guard over trusting a
+    prompt instruction alone (see chat_service.py's zero-row guards)."""
 
     try:
-        model = load_model()
+        input_container = av.open(file_path)
+        input_stream = input_container.streams.audio[0]
+
+        output_buffer = io.BytesIO()
+        output_container = av.open(output_buffer, mode="w", format="wav")
+        output_stream = output_container.add_stream("pcm_s16le", rate=16000)
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+
+        sample_chunks = []
+        for frame in input_container.decode(input_stream):
+            for resampled_frame in resampler.resample(frame):
+                sample_chunks.append(resampled_frame.to_ndarray())
+                for packet in output_stream.encode(resampled_frame):
+                    output_container.mux(packet)
+        for packet in output_stream.encode(None):
+            output_container.mux(packet)
+
+        output_container.close()
+        input_container.close()
     except Exception as error:
-        raise TranscriptionError(f"Could not load the Whisper model: {error}") from error
+        raise TranscriptionError(f"Could not read the recorded audio: {error}") from error
+
+    if sample_chunks:
+        samples = np.concatenate(sample_chunks, axis=None).astype(np.float64)
+        rms = float(np.sqrt(np.mean(samples ** 2)))
+    else:
+        rms = 0.0
+
+    return output_buffer.getvalue(), rms >= SILENCE_RMS_THRESHOLD
+
+
+def _parse_response(text):
+    match = _RESPONSE_RE.search(text)
+
+    if not match:
+        raise TranscriptionError(f"Unexpected transcription response: {text!r}")
+
+    language = match.group("language").strip()
+    raw = match.group("raw").strip()
+    question = match.group("question").strip()
+
+    if not raw or language.upper() == "NO_SPEECH" or raw.upper() == "NO_SPEECH":
+        return "", "", None
+
+    return raw, question, language
+
+
+async def transcribe_audio(file_path, language_hint=None):
+    """Transcribe and clean up one recorded audio file.
+
+    Returns (raw_transcript, clean_question, language) - clean_question
+    is already normalized (code-mixed/business-domain aware, see
+    TRANSCRIBE_PROMPT), ready to drop straight into the chat input, same
+    as what a separate query_normalizer.py pass used to produce.
+    raw_transcript is "" and language is None when no speech was
+    detected - callers should treat that as "please try again", same as
+    the old Whisper-empty-string case.
+
+    language_hint: an explicit language code (e.g. "ta") naming the
+    language being spoken, same manual-override purpose the old Whisper
+    path's language_hint had - pass None for full auto-detect.
+    """
+
+    wav_bytes, has_audible_signal = _convert_to_wav(file_path)
 
     if DEBUG_VOICE_PIPELINE:
         logger.info(
-            f"[voice-pipeline] RAW AUDIO: {os.path.getsize(file_path)} bytes, "
-            f"model={MODEL_SIZE}, language_hint={language_hint or 'auto'}"
+            f"[voice-pipeline] RAW AUDIO: {len(wav_bytes)} bytes (converted), "
+            f"has_audible_signal={has_audible_signal}, language_hint={language_hint or 'auto'}"
         )
 
-    try:
-        with _lock:
-            segments, info = model.transcribe(
-                file_path,
-                language=language_hint,
-                vad_filter=True,
-                condition_on_previous_text=False,
-            )
-            text = "".join(segment.text for segment in segments)
-    except Exception as error:
-        raise TranscriptionError(f"Could not transcribe audio: {error}") from error
+    if not has_audible_signal:
+        return "", "", None
 
-    text = _clean_transcript(text)
+    language_hint_instruction = ""
+    if language_hint:
+        language_name = LANGUAGE_HINT_NAMES.get(language_hint, language_hint)
+        language_hint_instruction = f" The speaker is speaking {language_name}."
+
+    prompt = TRANSCRIBE_PROMPT.format(language_hint_instruction=language_hint_instruction)
+
+    try:
+        response_text = await generate_from_audio(wav_bytes, "audio/wav", prompt)
+    except GeminiError as error:
+        raise TranscriptionError(str(error)) from error
+
+    raw, question, language = _parse_response(response_text)
 
     if DEBUG_VOICE_PIPELINE:
-        logger.info(f"[voice-pipeline] WHISPER RAW TRANSCRIPT: {text!r}")
-        logger.info(f"[voice-pipeline] DETECTED LANGUAGE: {info.language} (p={info.language_probability:.2f})")
+        logger.info(f"[voice-pipeline] GEMINI RAW TRANSCRIPT: {raw!r}")
+        logger.info(f"[voice-pipeline] GEMINI CLEAN QUESTION: {question!r}")
+        logger.info(f"[voice-pipeline] DETECTED LANGUAGE: {language}")
 
-    return text, info.language, info.language_probability
+    return raw, question, language

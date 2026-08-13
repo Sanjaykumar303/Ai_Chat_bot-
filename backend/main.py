@@ -10,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from routes.chat import router as chat_router
 from routes.transcribe import router as transcribe_router
 from routes.documents import router as documents_router
-from services import transcription
 from services import db_client
 
 logger = logging.getLogger("uvicorn")
@@ -47,21 +46,6 @@ app.add_middleware(
 app.include_router(chat_router)
 app.include_router(transcribe_router)
 app.include_router(documents_router)
-
-
-@app.on_event("startup")
-def warm_up_whisper():
-    """Load the Whisper model once so the first voice question isn't slow.
-
-    Downloads the model from Hugging Face on first run only, then reuses
-    the local cache. Failure here (e.g. no internet on first run) doesn't
-    crash startup - /transcribe will surface a clear error instead.
-    """
-
-    try:
-        transcription.load_model()
-    except Exception as error:
-        logger.warning(f"Could not load the Whisper model at startup: {error}")
 
 
 @app.on_event("startup")
