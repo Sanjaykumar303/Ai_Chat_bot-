@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import api from "../services/api";
+import { sendChatMessage, uploadDocument, deleteDocument, transcribeAudio } from "../services/api";
 import Loader from "./Loader";
+import AttachmentMenu from "./AttachmentMenu";
+import CameraCapture from "./CameraCapture";
 
 // Feature detection happens once, at module load, since these APIs
 // don't change while the app is running.
@@ -12,6 +14,21 @@ const MIC_RECORDING_SUPPORTED =
 
 const SPEECH_SYNTHESIS_SUPPORTED =
   typeof window !== "undefined" && "speechSynthesis" in window;
+
+// Mirrors backend/services/pdf_service.py's PDF_MAX_BYTES (15 MB) and
+// image_service.py's IMAGE_MAX_BYTES (10 MB) - purely a fast client-side
+// check so an oversized file doesn't even start uploading; the backend
+// enforces its own limits regardless.
+const MAX_PDF_BYTES = 15 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
+const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
+const CAMERA_MODAL_TITLES = {
+  camera: "📷 Camera",
+  live: "🎥 Live Camera",
+};
 
 // Voice input is transcribed by a local Whisper model on the backend
 // (services/transcription.py). Auto-detection is the default and works
@@ -94,10 +111,21 @@ function SourceBadge({ source }) {
   );
 }
 
-function ChatBox({ documentId = null }) {
+function isImageFilename(filename) {
+  const lower = (filename || "").toLowerCase();
+  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+// initialMessages seeds this chat session's history (see Chat.jsx,
+// which remounts ChatBox with key={sessionId} on every chat switch, so
+// this only ever runs once per session rather than needing to sync on
+// prop changes). onMessagesChange is called whenever the message list
+// changes, so Chat.jsx can persist it - ChatBox itself never touches
+// localStorage.
+function ChatBox({ initialMessages = [], onMessagesChange }) {
 
   const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(initialMessages);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -106,16 +134,70 @@ function ChatBox({ documentId = null }) {
   const [detectedLanguage, setDetectedLanguage] = useState(null);
   const [languageHint, setLanguageHint] = useState("auto");
 
+  // The backend's resolved_question from the last exchange in *this*
+  // chat (see routes/chat.py) - not necessarily what the user literally
+  // typed, since a follow-up like "yesterday" resolves to something like
+  // "What is the total profit yesterday?". Sent back as the next
+  // request's previous_question so a chain of follow-ups ("today" ->
+  // "yesterday" -> "and last week?") each build on the fully-expanded
+  // form of the one before it. Deliberately local component state, not
+  // persisted (see utils/chatStorage.js) - like attachment state, it
+  // resets on every chat switch (ChatBox is remounted, key=sessionId,
+  // see Chat.jsx), so a follow-up never resolves against a different
+  // chat's question.
+  const [lastResolvedQuestion, setLastResolvedQuestion] = useState(null);
+
+  // Attachment (uploaded PDF/image/camera capture) state - lives here
+  // now that there's no permanent sidebar to hold it. { documentId,
+  // filename, previewUrl } | null. previewUrl is a local object URL for
+  // images only (revoked on removal/replacement), so the compact
+  // preview can show an actual thumbnail rather than just an icon.
+  const [attachment, setAttachment] = useState(null);
+  const [attachmentStatus, setAttachmentStatus] = useState("idle"); // idle | uploading | processing | error
+  const [attachmentError, setAttachmentError] = useState("");
+  const [cameraMode, setCameraMode] = useState(null); // null | "camera" | "live"
+
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
+  const attachmentPreviewUrlRef = useRef(null);
+  // Captured once, at construction - lets the effect below tell "still
+  // the untouched initial array" apart from "a real setMessages update
+  // happened", by reference rather than by a mutable "have I run
+  // before" flag. A flag would break under React 18 StrictMode's
+  // dev-only double-invoke of effects (it flips on the first synthetic
+  // run, so the second synthetic run - against the same, still-
+  // unchanged messages - would wrongly look like a genuine change); a
+  // stable reference snapshot gives the same, correct answer no matter
+  // how many times the effect happens to run.
+  const initialMessagesRef = useRef(initialMessages);
 
-  // Stop any voice activity left running if the user navigates away.
+  // Reports this session's message list up to Chat.jsx for persistence
+  // (see utils/chatStorage.js) whenever it actually changes. Skipped
+  // when messages is still the original initialMessages reference,
+  // since reporting that back unchanged would bump this chat's
+  // updatedAt (and its position in the Recent Chats list) merely from
+  // switching to it, not from any real new message. Deliberately not
+  // depending on onMessagesChange itself, since a new inline function
+  // identity from the parent every render shouldn't re-fire this.
+  useEffect(() => {
+    if (messages === initialMessagesRef.current) {
+      return;
+    }
+    onMessagesChange?.(messages);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
+
+  // Stop any voice activity left running, and release any local object
+  // URL, if the user navigates away.
   useEffect(() => {
     return () => {
       mediaRecorderRef.current?.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       if (SPEECH_SYNTHESIS_SUPPORTED) {
         window.speechSynthesis.cancel();
+      }
+      if (attachmentPreviewUrlRef.current) {
+        URL.revokeObjectURL(attachmentPreviewUrlRef.current);
       }
     };
   }, []);
@@ -237,7 +319,7 @@ function ChatBox({ documentId = null }) {
     formData.append("language_hint", languageHint);
 
     try {
-      const response = await api.post("/transcribe", formData);
+      const response = await transcribeAudio(formData);
       const { transcript, language } = response.data;
       setQuestion(transcript);
       setDetectedLanguage(language || null);
@@ -251,6 +333,113 @@ function ChatBox({ documentId = null }) {
     }
 
     setTranscribing(false);
+  }
+
+  // Shared upload path for a PDF, a picked image, or a camera-captured
+  // image blob - all three are just bytes to POST /documents/upload,
+  // which already validates/branches PDF vs. image server-side
+  // (routes/documents.py). previewUrl is only ever set for images.
+  async function uploadAttachment(file, filename, previewUrl) {
+    // Replacing an existing attachment: drop the old temporary context
+    // first, so it's never left around or mistakenly reused once the
+    // new one is ready - same as the removed Sidebar's replace logic.
+    if (attachment?.documentId) {
+      try {
+        await deleteDocument(attachment.documentId);
+      } catch {
+        // Already gone/expired - fine, proceed with the new upload regardless.
+      }
+      if (attachmentPreviewUrlRef.current) {
+        URL.revokeObjectURL(attachmentPreviewUrlRef.current);
+      }
+      setAttachment(null);
+    }
+
+    setAttachmentError("");
+    setAttachmentStatus("uploading");
+    attachmentPreviewUrlRef.current = previewUrl || null;
+
+    const formData = new FormData();
+    formData.append("file", file, filename);
+
+    try {
+      // Bytes fully sent to the server means the "uploading" phase is
+      // over - what's left (extraction + chunking + indexing, or OCR
+      // for a scanned PDF/image) is "processing", which has no
+      // progress events of its own.
+      const response = await uploadDocument(formData, (progressEvent) => {
+        if (progressEvent.loaded >= progressEvent.total) {
+          setAttachmentStatus("processing");
+        }
+      });
+      const { document_id, filename: returnedFilename } = response.data;
+      setAttachment({ documentId: document_id, filename: returnedFilename, previewUrl: previewUrl || null });
+      setAttachmentStatus("idle");
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setAttachmentStatus("error");
+      setAttachmentError(typeof detail === "string" ? detail : "Unable to process this file.");
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+      attachmentPreviewUrlRef.current = null;
+    }
+  }
+
+  function handleUploadPdf(file) {
+    if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+      setAttachmentStatus("error");
+      setAttachmentError("Only PDF files are supported.");
+      return;
+    }
+    if (file.size > MAX_PDF_BYTES) {
+      setAttachmentStatus("error");
+      setAttachmentError(`File is too large (max ${MAX_PDF_BYTES / (1024 * 1024)} MB).`);
+      return;
+    }
+    uploadAttachment(file, file.name, null);
+  }
+
+  function handleUploadImage(file) {
+    const name = file.name.toLowerCase();
+    const isImage = IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext)) || IMAGE_MIME_TYPES.includes(file.type);
+
+    if (!isImage) {
+      setAttachmentStatus("error");
+      setAttachmentError("Only JPG, PNG, or WEBP images are supported.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setAttachmentStatus("error");
+      setAttachmentError(`File is too large (max ${MAX_IMAGE_BYTES / (1024 * 1024)} MB).`);
+      return;
+    }
+    uploadAttachment(file, file.name, URL.createObjectURL(file));
+  }
+
+  function handleCameraCapture(blob) {
+    setCameraMode(null);
+    const filename = `camera-capture-${Date.now()}.jpg`;
+    uploadAttachment(blob, filename, URL.createObjectURL(blob));
+  }
+
+  async function handleRemoveAttachment() {
+    if (attachment?.documentId) {
+      try {
+        await deleteDocument(attachment.documentId);
+      } catch {
+        // Already gone/expired on the backend - clear it from the UI regardless.
+      }
+    }
+
+    if (attachmentPreviewUrlRef.current) {
+      URL.revokeObjectURL(attachmentPreviewUrlRef.current);
+      attachmentPreviewUrlRef.current = null;
+    }
+
+    setAttachment(null);
+    setAttachmentStatus("idle");
+    setAttachmentError("");
   }
 
   // Runs when the user submits the form.
@@ -288,12 +477,15 @@ function ChatBox({ documentId = null }) {
     setLoading(true);
 
     try {
-      const response = await api.post("/chat", {
+      const response = await sendChatMessage({
         question: trimmedQuestion,
         language: spokenLanguage,
-        document_id: documentId,
+        document_id: attachment?.documentId ?? null,
+        previous_question: lastResolvedQuestion,
       });
-      const { answer, sources = [] } = response.data;
+      const { answer, sources = [], resolved_question } = response.data;
+
+      setLastResolvedQuestion(resolved_question || trimmedQuestion);
 
       setMessages((previous) => [
         ...previous,
@@ -317,6 +509,8 @@ function ChatBox({ documentId = null }) {
 
     setLoading(false);
   }
+
+  const attachmentBusy = attachmentStatus === "uploading" || attachmentStatus === "processing";
 
   return (
     <div className="chat-box">
@@ -384,7 +578,52 @@ function ChatBox({ documentId = null }) {
         <p className="chat-detected-language">Heard: {languageLabel(detectedLanguage)}</p>
       )}
 
+      {(attachment || attachmentBusy || attachmentStatus === "error") && (
+        <div className="attachment-preview">
+
+          {attachmentBusy && (
+            <span className="attachment-preview-status">
+              {attachmentStatus === "uploading" ? "Uploading..." : "Processing document..."}
+            </span>
+          )}
+
+          {attachmentStatus === "error" && (
+            <span className="attachment-preview-error">{attachmentError}</span>
+          )}
+
+          {attachment && !attachmentBusy && (
+            <>
+              {attachment.previewUrl ? (
+                <img className="attachment-preview-thumb" src={attachment.previewUrl} alt="" />
+              ) : (
+                <span className="attachment-preview-icon">
+                  {isImageFilename(attachment.filename) ? "🖼️" : "📄"}
+                </span>
+              )}
+              <span className="attachment-preview-name">{attachment.filename}</span>
+              <button
+                type="button"
+                className="attachment-preview-remove"
+                onClick={handleRemoveAttachment}
+                aria-label="Remove attachment"
+                title="Remove attachment"
+              >
+                ✕
+              </button>
+            </>
+          )}
+
+        </div>
+      )}
+
       <form className="chat-form" onSubmit={handleSubmit}>
+
+        <AttachmentMenu
+          disabled={loading || attachmentBusy}
+          onUploadPdf={handleUploadPdf}
+          onUploadImage={handleUploadImage}
+          onOpenCamera={setCameraMode}
+        />
 
         <input
           type="text"
@@ -434,6 +673,14 @@ function ChatBox({ documentId = null }) {
         </button>
 
       </form>
+
+      {cameraMode && (
+        <CameraCapture
+          title={CAMERA_MODAL_TITLES[cameraMode]}
+          onCapture={handleCameraCapture}
+          onClose={() => setCameraMode(null)}
+        />
+      )}
 
     </div>
   );

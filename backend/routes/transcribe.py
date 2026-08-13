@@ -4,12 +4,11 @@ import tempfile
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from starlette.concurrency import run_in_threadpool
 
+from config import DEBUG_VOICE_PIPELINE
 from services.transcription import transcribe_audio, TranscriptionError
 from services.query_normalizer import normalize_query
 
 router = APIRouter()
-
-DEBUG_VOICE_PIPELINE = os.getenv("DEBUG_VOICE_PIPELINE", "false").lower() == "true"
 
 # Generous enough for a spoken question (well over a minute of compressed
 # voice audio), small enough to keep memory use bounded on an 8 GB machine.

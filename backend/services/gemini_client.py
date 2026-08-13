@@ -12,6 +12,8 @@ import os
 from google import genai
 from google.genai import types
 
+import config
+
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
 
@@ -20,7 +22,7 @@ class GeminiError(Exception):
 
 
 def _require_api_key():
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = config.GEMINI_API_KEY
 
     if not api_key:
         raise GeminiError("GEMINI_API_KEY is missing. Add it to backend/.env")

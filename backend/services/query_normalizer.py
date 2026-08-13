@@ -12,13 +12,11 @@ questions already use.
 """
 
 import logging
-import os
 
+from config import DEBUG_VOICE_PIPELINE
 from services.gemini_client import generate, GeminiError
 
 logger = logging.getLogger("uvicorn")
-
-DEBUG_VOICE_PIPELINE = os.getenv("DEBUG_VOICE_PIPELINE", "false").lower() == "true"
 
 NORMALIZE_PROMPT = """You are cleaning up a speech-to-text transcript so it can be understood correctly by a downstream system.
 

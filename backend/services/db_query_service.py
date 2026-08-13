@@ -11,11 +11,11 @@ write and then explain a query - everything else stays decoupled.
 """
 
 import logging
-import os
 import re
 
 from starlette.concurrency import run_in_threadpool
 
+from config import DEBUG_VOICE_PIPELINE
 from services.gemini_client import generate, GeminiError
 from services.db_client import (
     get_schema_description,
@@ -29,8 +29,6 @@ from services.sql_guard import validate_and_limit, SqlValidationError
 
 logger = logging.getLogger("uvicorn")
 
-DEBUG_VOICE_PIPELINE = os.getenv("DEBUG_VOICE_PIPELINE", "false").lower() == "true"
-
 FALLBACK_ANSWER = "I couldn't answer that from the database."
 
 SQL_PROMPT = """You are a PostgreSQL expert. Given the database schema below, write ONE read-only SQL SELECT query that answers the question.
@@ -40,6 +38,7 @@ The question may ask for a business metric - such as revenue, cost, profit, or l
 - "Cost" is typically quantity x a unit cost price, usually from a related product-style table joined in.
 - "Profit" or "loss" is typically revenue minus cost, further reduced by any expenses and any returns/refunds for the same period. A negative result is a loss - state it as a loss, not a negative profit.
 - For "today", "yesterday", "this week", "this month", etc., use CURRENT_DATE and interval arithmetic (e.g. CURRENT_DATE, CURRENT_DATE - INTERVAL '1 day', DATE_TRUNC('week', CURRENT_DATE)) - never a hardcoded literal date.
+- "today" and "yesterday" mean exactly that one day - filter with an EXACT match (date_column = CURRENT_DATE, or date_column = CURRENT_DATE - INTERVAL '1 day'), never date_column <= CURRENT_DATE or any other open-ended/cumulative comparison. A "<=" filter computes an all-time running total, not that single day's figure, and would silently misrepresent one as the other.
 
 Financial/accounting questions (revenue, profit, expenses, income, P&L) specifically:
 - If the schema contains a general-ledger-style pair of tables - one holding transaction records where a JSONB column lists line items (each with an account/ledger name and an amount), and another table that classifies each named account into a group (e.g. a column distinguishing income/sales accounts from expense accounts) - prefer this pair as the authoritative source over any single-purpose table that only covers one payment channel or one expense category. The ledger pair reflects the closed books; a narrower table may miss entire income/expense sources, or double-count what the ledger already includes under a different label.

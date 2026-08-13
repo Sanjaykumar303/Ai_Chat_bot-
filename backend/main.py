@@ -1,10 +1,7 @@
 import logging
-import os
-
-from dotenv import load_dotenv
 
 # Loaded first, before any other import reads an environment variable.
-load_dotenv()
+import config
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,19 +31,13 @@ app = FastAPI(
 # localhost on ANY port, so local dev keeps working after such a move.
 #
 # The deployed frontend (e.g. a Vercel domain) isn't localhost, so it's
-# allowed separately via FRONTEND_ORIGIN - a comma-separated list of the
-# real site address(es), set in the host's environment variables, not
-# committed to source. Unset in local dev, where it's not needed.
-FRONTEND_ORIGINS = [
-    origin.strip()
-    for origin in os.getenv("FRONTEND_ORIGIN", "").split(",")
-    if origin.strip()
-]
-
+# allowed separately via config.FRONTEND_ORIGINS - a comma-separated list
+# of the real site address(es), set in the host's environment variables,
+# not committed to source. Unset in local dev, where it's not needed.
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
-    allow_origins=FRONTEND_ORIGINS,
+    allow_origins=config.FRONTEND_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

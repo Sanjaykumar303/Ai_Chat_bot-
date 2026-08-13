@@ -19,6 +19,8 @@ import logging
 import os
 import threading
 
+from config import DEBUG_VOICE_PIPELINE
+
 logger = logging.getLogger("uvicorn")
 
 # "tiny" is the smallest multilingual Whisper model (~75 MB on disk in
@@ -30,8 +32,6 @@ logger = logging.getLogger("uvicorn")
 MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "tiny")
 DEVICE = "cpu"
 COMPUTE_TYPE = "int8"
-
-DEBUG_VOICE_PIPELINE = os.getenv("DEBUG_VOICE_PIPELINE", "false").lower() == "true"
 
 # One model instance is shared by every request, and faster-whisper's CPU
 # inference isn't guaranteed safe for concurrent calls on one instance, so

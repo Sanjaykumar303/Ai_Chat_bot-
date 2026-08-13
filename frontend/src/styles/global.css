@@ -1,17 +1,41 @@
 /* Styles shared by every page */
 
 .navbar{
-    background:#1a237e;
+    background:var(--color-accent);
     color:white;
-    padding:15px 30px;
+    height:var(--navbar-height);
+    padding:0 20px;
     display:flex;
-    justify-content:space-between;
     align-items:center;
+    gap:12px;
+    position:sticky;
+    top:0;
+    z-index:30;
+    box-shadow:var(--shadow-sm);
+}
+
+.navbar-menu-button{
+    display:none;
+    align-items:center;
+    justify-content:center;
+    width:var(--touch-target);
+    height:var(--touch-target);
+    margin-left:-8px;
+    background:none;
+    border:none;
+    color:white;
+    font-size:20px;
+    border-radius:var(--radius-sm);
+    cursor:pointer;
+}
+
+.navbar-menu-button:hover{
+    background:rgba(255,255,255,0.12);
 }
 
 .navbar-title{
-    font-size:20px;
-    font-weight:bold;
+    font-size:18px;
+    font-weight:600;
 }
 
 .navbar-links a{
@@ -23,4 +47,10 @@
 
 .navbar-links a:hover{
     text-decoration:underline;
+}
+
+@media (max-width: 768px){
+    .navbar-menu-button{
+        display:flex;
+    }
 }
