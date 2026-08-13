@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+
+# Pre-removal document/RAG feature backups (see backend/uploads.bak,
+# backend/vectorstore.bak) - not source, not needed for deployment.
+backend/uploads.bak/
+backend/vectorstore.bak/
+
+# Node
+node_modules/
+dist/
+
+# Local Claude Code tooling config - not part of the application
+.claude/

@@ -1,0 +1,18 @@
+/* Base styles for the whole app */
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
+
+body{
+    background:#f5f7fa;
+    /* "Segoe UI" and "Noto Sans" both ship with a Rupee sign (U+20B9)
+       glyph on every modern OS; some older/minimal Arial builds don't,
+       and silently render it as a solid box instead of erroring - this
+       app displays INR amounts (see backend/routes/chat.py's ANSWER_PROMPT),
+       so that glyph has to be guaranteed, not just "usually" there. */
+    font-family:"Segoe UI", Arial, "Noto Sans", Helvetica, sans-serif;
+    color:#333;
+}

@@ -1,0 +1,26 @@
+/* Styles shared by every page */
+
+.navbar{
+    background:#1a237e;
+    color:white;
+    padding:15px 30px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+}
+
+.navbar-title{
+    font-size:20px;
+    font-weight:bold;
+}
+
+.navbar-links a{
+    color:white;
+    text-decoration:none;
+    margin-left:20px;
+    font-size:16px;
+}
+
+.navbar-links a:hover{
+    text-decoration:underline;
+}

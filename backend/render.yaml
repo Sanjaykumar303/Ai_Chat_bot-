@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: ai-document-assistant-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-flash-latest
+      - key: WHISPER_MODEL_SIZE
+        value: tiny
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: PGHOST
+        sync: false
+      - key: PGPORT
+        sync: false
+      - key: PGUSER
+        sync: false
+      - key: PGPASSWORD
+        sync: false
+      - key: PGDATABASE
+        sync: false
+      - key: PGSSLMODE
+        sync: false
+      - key: DB_QUERY_ALLOWED_TABLES
+        sync: false

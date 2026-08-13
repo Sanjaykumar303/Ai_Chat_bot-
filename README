@@ -1,0 +1,127 @@
+AI Document Assistant
+=====================
+
+Upload PDF, DOCX, or TXT files to build a knowledge base, then ask questions
+about them by typing or speaking. Answers come from Google Gemini, grounded
+only in the documents you've uploaded, with the source file (and page number,
+for PDFs) shown under each answer.
+
+Tech: React (Vite) + FastAPI + Axios + Google Gemini + LangChain + FAISS
+      + pypdf + python-docx + browser Web Speech API
+
+Pipeline: Upload -> Extract text -> Split into chunks -> Embed with Gemini
+-> Store in a FAISS index on disk -> Retrieve the 3 most relevant chunks
+for a question -> Send only those chunks to Gemini -> Answer + sources.
+
+No database is used. The FAISS index and its manifest live under
+backend/vectorstore/ and are rebuilt from your uploaded files if deleted -
+uploads are not replaced by new ones, they accumulate into the same
+knowledge base.
+
+
+SETUP
+-----
+
+1. Add your Gemini API key
+
+   Open backend/.env and replace the placeholder:
+
+       GEMINI_API_KEY=your_real_key_here
+
+   A free key can be created at https://aistudio.google.com/apikey
+
+
+2. Start the backend (terminal 1, Windows)
+
+   Requires Python 3.12 (pinned in backend/.python-version). Python 3.13
+   is NOT supported yet - faster-whisper's ctranslate2 dependency ships
+   a broken Windows wheel under 3.13 (its compiled extension is
+   mislabeled cp313 but was actually built for cp312), which crashes
+   voice input at startup. If you use pyenv-win, `pyenv local` in
+   backend/ will pick up the pin automatically.
+
+       rem 1. Install Python 3.12 if you don't have it
+       rem    https://www.python.org/downloads/release/python-3120/
+
+       rem 2. From the project root, create a fresh venv for the backend
+       cd backend
+       py -3.12 -m venv venv
+
+       rem 3. Activate it
+       venv\Scripts\activate
+
+       rem 4. Install dependencies
+       pip install -r requirements.txt
+
+       rem 5. Run the server
+       uvicorn main:app --reload
+
+   Runs on http://127.0.0.1:8000
+
+   venv/ and .env are both already excluded via .gitignore - never
+   commit either one.
+
+
+3. Start the frontend (terminal 2)
+
+       cd frontend
+       npm install
+       npm run dev
+
+   Runs on http://localhost:5173
+
+
+HOW TO USE
+----------
+
+1. Open http://localhost:5173
+2. Choose a PDF, DOCX, or TXT file and click Upload (repeat for more files -
+   each one adds to the same knowledge base)
+3. Click "Chat" in the top bar
+4. Type a question, or click the microphone button and speak it
+5. Click the speaker icon under any answer to hear it read aloud, or turn on
+   "Auto Speak" to have every new answer read automatically
+
+
+API
+---
+
+POST /upload
+   Form data field: file
+   Response: { "message": "...", "filename": "...", "characters": 1234, "chunks": 5 }
+
+POST /chat
+   Request:  { "question": "What is Machine Learning?" }
+   Response: { "answer": "...", "sources": [{ "filename": "notes.pdf", "page": 2 }] }
+
+
+NOTES
+-----
+
+- PDF, DOCX, and TXT are accepted. Old .doc files are not supported.
+- Scanned PDFs with no text layer are rejected, because there is
+  nothing to read without OCR.
+- Each upload ADDS to the shared knowledge base. Re-uploading a file with
+  the same name and content is a no-op (nothing is re-embedded). Re-uploading
+  a file with the same name but changed content replaces just that file's
+  chunks.
+- There is no "remove a document" button. To reset the knowledge base,
+  stop the backend and delete the backend/vectorstore/ folder.
+- Chunking uses a 600-character chunk size with an 80-character overlap,
+  and retrieval pulls the top 3 most relevant chunks per question.
+  Change CHUNK_SIZE / CHUNK_OVERLAP / TOP_K in backend/services/rag_service.py.
+- Voice input (microphone) and voice output (speaker / Auto Speak) run
+  entirely in the browser via the Web Speech API - no audio is sent to the
+  backend. They only work in browsers that support that API (Chrome/Edge).
+  Unsupported browsers see the buttons disabled rather than a crash.
+
+- Two separate Gemini models are used and both are set in backend/.env:
+    GEMINI_MODEL           - generates the answer text
+    GEMINI_EMBEDDING_MODEL - turns document chunks into vectors for search
+  Their defaults ("gemini-flash-latest" and "models/gemini-embedding-001")
+  were verified to work with a real key. If you ever see "model is not
+  available for your key" for either one, list what your key can actually
+  use:
+
+      cd backend
+      venv\Scripts\python.exe -c "import os;from dotenv import load_dotenv;from google import genai;load_dotenv();[print(m.name) for m in genai.Client(api_key=os.getenv('GEMINI_API_KEY')).models.list()]"
