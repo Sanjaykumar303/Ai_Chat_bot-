@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { sendChatMessage, uploadDocument, deleteDocument, transcribeAudio } from "../services/api";
 import Loader from "./Loader";
 import AttachmentMenu from "./AttachmentMenu";
 import CameraCapture from "./CameraCapture";
+import logo from "../assets/logo.jpg";
 
 // Feature detection happens once, at module load, since these APIs
 // don't change while the app is running.
@@ -174,6 +177,7 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
   const streamRef = useRef(null);
   const recordingIntervalRef = useRef(null);
   const attachmentPreviewUrlRef = useRef(null);
+  const messagesEndRef = useRef(null);
   // Captured once, at construction - lets the effect below tell "still
   // the untouched initial array" apart from "a real setMessages update
   // happened", by reference rather than by a mutable "have I run
@@ -200,6 +204,14 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
     onMessagesChange?.(messages);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages]);
+
+  // Keeps the latest message (or the typing indicator, while a reply is
+  // pending) in view automatically - without this, a long conversation
+  // would leave a new reply below the fold, silently requiring the user
+  // to notice and scroll down themselves every single time.
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, loading]);
 
   // Stop any voice activity left running, and release any local object
   // URL, if the user navigates away.
@@ -586,42 +598,56 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
 
 
         {messages.length === 0 && !loading && (
-          <p className="chat-empty">
-            Ask a general knowledge question, or ask about the connected database.
-          </p>
+          <div className="chat-empty">
+            <span className="chat-empty-icon" aria-hidden="true">💬</span>
+            <p>Ask me anything - general knowledge, your connected database, or attach a PDF/image to ask about that too.</p>
+          </div>
         )}
 
         {messages.map((message, index) => (
           <div key={index} className={`chat-message ${message.sender}`}>
-            <span className="chat-sender">
-              {message.sender === "user" ? "You" : "Assistant"}
-            </span>
-            <p>{message.text}</p>
-
-            {message.sender === "ai" && (
-              <button
-                type="button"
-                className="speaker-button"
-                onClick={() => speak(message.text)}
-                disabled={!SPEECH_SYNTHESIS_SUPPORTED}
-                title={SPEECH_SYNTHESIS_SUPPORTED ? "Read this answer aloud" : "Voice output is not supported in this browser"}
-              >
-                🔊
-              </button>
+            {message.sender === "user" ? (
+              <span className="chat-avatar chat-avatar-user" aria-hidden="true">🧑</span>
+            ) : (
+              <img className="chat-avatar chat-avatar-ai" src={logo} alt="" />
             )}
 
-            {message.sources?.length > 0 && (
-              <p className="chat-sources">
-                Sources:{" "}
-                {message.sources.map((source, sourceIndex) => (
-                  <SourceBadge key={sourceIndex} source={source} />
-                ))}
-              </p>
-            )}
+            <div className="chat-message-body">
+              <span className="chat-sender">
+                {message.sender === "user" ? "You" : "Assistant"}
+              </span>
+
+              <div className="chat-message-text">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown>
+              </div>
+
+              {message.sender === "ai" && (
+                <button
+                  type="button"
+                  className="speaker-button"
+                  onClick={() => speak(message.text)}
+                  disabled={!SPEECH_SYNTHESIS_SUPPORTED}
+                  title={SPEECH_SYNTHESIS_SUPPORTED ? "Read this answer aloud" : "Voice output is not supported in this browser"}
+                >
+                  🔊
+                </button>
+              )}
+
+              {message.sources?.length > 0 && (
+                <p className="chat-sources">
+                  Sources:{" "}
+                  {message.sources.map((source, sourceIndex) => (
+                    <SourceBadge key={sourceIndex} source={source} />
+                  ))}
+                </p>
+              )}
+            </div>
           </div>
         ))}
 
         {loading && <Loader text="Thinking..." />}
+
+        <div ref={messagesEndRef} />
 
       </div>
 

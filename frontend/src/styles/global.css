@@ -1,17 +1,23 @@
 /* Styles shared by every page */
 
+/* A floating white pill-bar rather than a full-bleed color band - sits
+   on top of the page's lavender background with visible margin around
+   it, matching the reference's "Dr. Meera S" top nav treatment. */
 .navbar{
-    background:var(--color-accent);
-    color:white;
+    background:var(--color-surface);
+    color:var(--color-text);
     height:var(--navbar-height);
-    padding:0 20px;
+    margin:12px 16px 0;
+    padding:0 16px;
     display:flex;
     align-items:center;
-    gap:12px;
+    gap:10px;
     position:sticky;
-    top:0;
+    top:12px;
     z-index:30;
+    border-radius:var(--radius-pill);
     box-shadow:var(--shadow-sm);
+    border:1px solid var(--color-border);
 }
 
 .navbar-menu-button{
@@ -20,26 +26,36 @@
     justify-content:center;
     width:var(--touch-target);
     height:var(--touch-target);
-    margin-left:-8px;
+    margin-left:-6px;
     background:none;
     border:none;
-    color:white;
+    color:var(--color-text);
     font-size:20px;
-    border-radius:var(--radius-sm);
+    border-radius:var(--radius-pill);
     cursor:pointer;
 }
 
 .navbar-menu-button:hover{
-    background:rgba(255,255,255,0.12);
+    background:var(--color-surface-alt);
+}
+
+.navbar-logo{
+    width:36px;
+    height:36px;
+    flex-shrink:0;
+    object-fit:cover;
+    border-radius:50%;
+    box-shadow:var(--shadow-sm);
 }
 
 .navbar-title{
-    font-size:18px;
-    font-weight:600;
+    font-size:17px;
+    font-weight:700;
+    color:var(--color-text);
 }
 
 .navbar-links a{
-    color:white;
+    color:var(--color-text);
     text-decoration:none;
     margin-left:20px;
     font-size:16px;
@@ -52,6 +68,10 @@
 @media (max-width: 768px){
     .navbar-menu-button{
         display:flex;
+    }
+
+    .navbar{
+        margin:8px 8px 0;
     }
 }
 

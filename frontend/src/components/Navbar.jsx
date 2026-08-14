@@ -1,3 +1,5 @@
+import logo from "../assets/logo.jpg";
+
 function Navbar({ onToggleSidebar }) {
   return (
     <div className="navbar">
@@ -11,6 +13,7 @@ function Navbar({ onToggleSidebar }) {
         ☰
       </button>
 
+      <img className="navbar-logo" src={logo} alt="" />
       <span className="navbar-title">AI Document Assistant</span>
 
     </div>
