@@ -1,11 +1,12 @@
 import logging
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from services import document_store, image_service, pdf_retrieval, pdf_service
 from services.gemini_client import GeminiError
 from services.image_service import ImageProcessingError
 from services.pdf_service import NoExtractableTextError, PdfProcessingError
+from services.rate_limiter import enforce_rate_limit
 
 router = APIRouter()
 
@@ -23,7 +24,7 @@ def _is_image(filename, content_type):
     )
 
 
-@router.post("/documents/upload")
+@router.post("/documents/upload", dependencies=[Depends(enforce_rate_limit)])
 async def upload_document(file: UploadFile = File(...)):
 
     data = await file.read()

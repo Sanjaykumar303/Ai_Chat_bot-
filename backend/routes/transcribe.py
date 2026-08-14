@@ -1,10 +1,11 @@
 import os
 import tempfile
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 
 from config import DEBUG_VOICE_PIPELINE
 from services.transcription import transcribe_audio, TranscriptionError
+from services.rate_limiter import enforce_rate_limit
 
 router = APIRouter()
 
@@ -13,7 +14,7 @@ router = APIRouter()
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 
 
-@router.post("/transcribe")
+@router.post("/transcribe", dependencies=[Depends(enforce_rate_limit)])
 async def transcribe(audio: UploadFile = File(...), language_hint: str | None = Form(None)):
 
     # "auto" (the UI's default option) means "no hint" - only a real

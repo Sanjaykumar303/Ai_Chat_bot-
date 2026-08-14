@@ -155,7 +155,13 @@ _UNVERIFIED_SINGLE_DAY_ANSWER = (
 # month" legitimately use a range comparison instead of equality, which
 # this check isn't meant to second-guess).
 _SINGLE_DAY_QUESTION_RE = re.compile(r"\b(today|yesterday)\b", re.IGNORECASE)
-_EXACT_DATE_FILTER_RE = re.compile(r"=\s*CURRENT_DATE\b", re.IGNORECASE)
+# The negative lookbehind is load-bearing, not decorative: a bare "="
+# search matches the "=" *inside* "<=" and ">=" too, since both contain
+# a literal equals sign - found via this project's own test suite
+# treating "voucher_date <= CURRENT_DATE" as a real exact-day filter,
+# exactly the running-total-passed-off-as-a-single-day case this guard
+# exists to catch (see _sql_has_exact_day_filter's docstring).
+_EXACT_DATE_FILTER_RE = re.compile(r"(?<![<>!])=\s*CURRENT_DATE\b", re.IGNORECASE)
 
 
 def _is_single_day_question(text):

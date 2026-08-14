@@ -1,7 +1,7 @@
 import logging
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from config import DEBUG_VOICE_PIPELINE, GEMINI_API_KEY
@@ -16,6 +16,7 @@ from services.intent_router import (
 )
 from services.db_query_service import get_routing_terms
 from services.followup_context import rewrite_with_context
+from services.rate_limiter import enforce_rate_limit
 
 router = APIRouter()
 
@@ -50,7 +51,7 @@ class ChatRequest(BaseModel):
     previous_question: str | None = None
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(enforce_rate_limit)])
 async def chat(request: ChatRequest):
 
     question = request.question.strip()

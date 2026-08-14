@@ -1,0 +1,5 @@
+[
+  {"audio": "sample1_profit.wav", "expected": "What is the profit today?"},
+  {"audio": "sample2_capital.wav", "expected": "What is the capital of France?"},
+  {"audio": "sample3_expense.wav", "expected": "How much did we spend on marketing this month?"}
+]

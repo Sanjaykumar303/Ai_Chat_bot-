@@ -16,6 +16,20 @@ import config
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
+# The SDK's own default (no retry_options passed) is "never retry" - a
+# single transient network blip or 5xx/429 spike fails the whole
+# request, whether that's a chat answer, OCR, or voice transcription.
+# 3 attempts (1 initial + 2 retries) with a capped delay is deliberately
+# more conservative than the SDK's own out-of-the-box retry default (5
+# attempts, up to 60s max delay each) - that's tuned for batch/background
+# work, but this app's calls are all in the critical path of a
+# synchronous user-facing request, so a bounded few seconds of added
+# latency is worth it, not a multi-minute hang before finally failing.
+# Which errors get retried (408/429/5xx, plus connection/timeout errors)
+# is the SDK's own default (see google.genai._api_client.retry_args) -
+# not overridden here, just given a tighter attempt/delay budget.
+_RETRY_OPTIONS = types.HttpRetryOptions(attempts=3, initial_delay=1.0, max_delay=8.0)
+
 
 class GeminiError(Exception):
     """Raised with a user-facing message already attached."""
@@ -30,6 +44,17 @@ def _require_api_key():
     return api_key
 
 
+def _client(api_key):
+    """The one place a genai.Client is constructed, so the retry policy
+    above can't drift between generate()/generate_from_image()/
+    generate_from_audio() - unlike their error-handling blocks (kept
+    duplicated on purpose, see each function's docstring), a retry
+    policy is a single cross-cutting setting, not per-endpoint
+    behavior, so there's no reason for three copies of it to exist."""
+
+    return genai.Client(api_key=api_key, http_options=types.HttpOptions(retry_options=_RETRY_OPTIONS))
+
+
 async def generate(prompt):
     """Send one prompt to Gemini and return the generated text.
 
@@ -39,7 +64,7 @@ async def generate(prompt):
     api_key = _require_api_key()
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = _client(api_key)
         response = await client.aio.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
@@ -90,7 +115,7 @@ async def generate_from_image(image_bytes, mime_type, prompt):
     api_key = _require_api_key()
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = _client(api_key)
         image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
         response = await client.aio.models.generate_content(
             model=MODEL_NAME,
@@ -138,7 +163,7 @@ async def generate_from_audio(audio_bytes, mime_type, prompt):
     api_key = _require_api_key()
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = _client(api_key)
         audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
         response = await client.aio.models.generate_content(
             model=MODEL_NAME,

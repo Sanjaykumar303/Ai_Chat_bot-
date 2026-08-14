@@ -142,6 +142,24 @@ def get_engine():
     return _engine
 
 
+def ping():
+    """Run a trivial query to confirm the database is actually reachable
+    right now. Deliberately not get_table_allowlist()/get_schema_terms()
+    - those are TTL-cached (DB_SCHEMA_CACHE_TTL), so a health check built
+    on them could report "healthy" from stale cached data even if the
+    database just went down. Raises DatabaseError (via get_engine() or
+    the query itself) on any failure - callers decide what to do with
+    that, this only proves or disproves connectivity."""
+
+    engine = get_engine()
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as error:
+        raise DatabaseQueryError(f"Database ping failed: {error}") from error
+
+
 def _schema_cache_expired():
     if _schema_cache is None:
         return True

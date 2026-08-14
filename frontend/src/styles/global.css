@@ -54,3 +54,39 @@
         display:flex;
     }
 }
+
+.error-boundary-fallback{
+    height:100%;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    gap:12px;
+    padding:24px;
+}
+
+.error-boundary-fallback h1{
+    color:var(--color-accent);
+    font-size:22px;
+}
+
+.error-boundary-fallback p{
+    color:var(--color-text-muted);
+    max-width:420px;
+}
+
+.error-boundary-fallback button{
+    background:var(--color-accent);
+    color:white;
+    border:none;
+    padding:10px 24px;
+    border-radius:999px;
+    font-size:15px;
+    font-weight:600;
+    cursor:pointer;
+}
+
+.error-boundary-fallback button:hover{
+    background:var(--color-accent-hover);
+}

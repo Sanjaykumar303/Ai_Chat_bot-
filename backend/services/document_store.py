@@ -69,6 +69,30 @@ def get_document(document_id):
         return doc
 
 
+def sweep_expired():
+    """Remove every entry past DOCUMENT_TTL_SECONDS, regardless of
+    whether get_document() has been called for it since. get_document()
+    alone only evicts a document the next time *that exact id* is looked
+    up - a document uploaded and never asked about again (tab closed,
+    conversation abandoned) would otherwise sit in memory until the
+    process restarts. Meant to be called periodically (see main.py's
+    startup hook), not from a request path. Returns the number removed,
+    purely for logging."""
+
+    now = time.time()
+
+    with _lock:
+        expired_ids = [
+            document_id
+            for document_id, doc in _documents.items()
+            if now - doc["created_at"] > DOCUMENT_TTL_SECONDS
+        ]
+        for document_id in expired_ids:
+            del _documents[document_id]
+
+    return len(expired_ids)
+
+
 def delete_document(document_id):
     """Remove a document's temporary context immediately (user clicked
     "Remove PDF", or is replacing it). Returns True if something was

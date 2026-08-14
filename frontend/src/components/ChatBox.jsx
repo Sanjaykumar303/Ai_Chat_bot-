@@ -43,12 +43,11 @@ const CAMERA_MODAL_TITLES = {
   live: "🎥 Live Camera",
 };
 
-// Voice input is transcribed by a local Whisper model on the backend
-// (services/transcription.py). Auto-detection is the default and works
-// fine for clearly English speech, but real testing showed it under-uses
-// Tamil on short/code-mixed clips (small Whisper models are known to be
-// English-biased under auto-detect) - so a manual override is offered,
-// left on Auto unless the user knows which language they're about to speak.
+// Voice input is transcribed via Gemini's audio understanding on the
+// backend (services/transcription.py). Auto-detection is the default
+// and works well, but a manual override is still offered for anyone who
+// already knows which language they're about to speak - left on Auto
+// otherwise.
 const LANGUAGE_LABELS = {
   en: "English",
   ta: "Tamil",
@@ -259,7 +258,7 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
   }
 
   // Records a clip from the microphone, uploads it to the backend for
-  // local Whisper transcription (services/transcription.py), then fills
+  // Gemini-based transcription (services/transcription.py), then fills
   // the input with the result - the user can still edit it before
   // sending, same as the old live-transcript behavior.
   async function startRecording() {
@@ -273,9 +272,11 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
     let stream;
     try {
       // Mono, and the browser's own noise/gain handling - cheap, built-in
-      // preprocessing that measurably helps a small model like Whisper
-      // tiny. Whisper resamples internally regardless of input rate, so
-      // no sample-rate constraint is needed here.
+      // preprocessing that's still worth doing even though transcription
+      // is now Gemini-based rather than a local model. The backend
+      // (services/transcription.py's _convert_to_wav) resamples to a
+      // fixed rate internally regardless of what's recorded here, so no
+      // sample-rate constraint is needed on this end.
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -486,8 +487,21 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
     // Stops the browser from reloading the page.
     event.preventDefault();
 
+    // Submitting (Enter, or clicking Send) while a recording is still
+    // in progress, or its transcript hasn't come back yet, isn't a
+    // genuinely empty question - the question box is only empty because
+    // transcribeAudio()'s response hasn't arrived yet. Stop the
+    // recording (if any) and return without touching `error`, rather
+    // than falsely claiming nothing was typed - sendForTranscription
+    // fills the input in as soon as it resolves, and the user can
+    // submit again then.
     if (recording) {
       stopRecording();
+      return;
+    }
+
+    if (transcribing) {
+      return;
     }
 
     const trimmedQuestion = question.trim();
@@ -568,7 +582,8 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
         </label>
       </div>
 
-      <div className="chat-messages">
+      <div className="chat-messages" role="log" aria-live="polite" aria-relevant="additions">
+
 
         {messages.length === 0 && !loading && (
           <p className="chat-empty">
@@ -712,7 +727,7 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
           {transcribing ? "…" : "🎤"}
         </button>
 
-        <button type="submit" disabled={loading}>
+        <button type="submit" disabled={loading || recording || transcribing}>
           {loading ? "Sending..." : "Send"}
         </button>
 
