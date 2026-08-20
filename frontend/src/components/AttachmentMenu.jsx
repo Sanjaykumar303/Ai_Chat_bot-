@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Attachment, Camera, File, Image } from "../icons";
 
 // The "+" attachment button beside the chat input, ChatGPT-style: click
 // to reveal PDF/image upload and camera capture options. Purely
@@ -70,36 +71,26 @@ function AttachmentMenu({ disabled, onUploadPdf, onUploadImage, onOpenCamera }) 
         aria-label="Attach a file"
         aria-expanded={open}
       >
-        +
+        <Attachment size={20} />
       </button>
 
       {open && (
         <div className="attachment-menu">
           <button type="button" className="attachment-menu-item" onClick={() => pdfInputRef.current?.click()}>
-            📄 Upload PDF
+            <File size={18} /> Upload PDF
           </button>
           <button type="button" className="attachment-menu-item" onClick={() => imageInputRef.current?.click()}>
-            🖼️ Upload Image
+            <Image size={18} /> Upload Image
           </button>
           <button
             type="button"
             className="attachment-menu-item"
             onClick={() => {
               setOpen(false);
-              onOpenCamera("camera");
+              onOpenCamera();
             }}
           >
-            📷 Camera
-          </button>
-          <button
-            type="button"
-            className="attachment-menu-item"
-            onClick={() => {
-              setOpen(false);
-              onOpenCamera("live");
-            }}
-          >
-            🎥 Live Camera
+            <Camera size={18} /> Camera
           </button>
         </div>
       )}

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { Camera, Close } from "../icons";
 
 // Full-screen-ish modal: requests the camera, shows a live preview, and
-// lets the user capture a single still frame. Both the "Camera" and
-// "Live Camera" attachment-menu items open this same component - there's
-// no meaningful browser-API difference between them (capturing a still
-// frame always requires a live preview stream first), just a different
-// title, passed in via props.
+// lets the user capture a single still frame - opened from the
+// AttachmentMenu's "Camera" item. `title` is still a prop (rather than
+// hardcoded) so this modal stays reusable if another entry point ever
+// needs it with different heading text.
 function CameraCapture({ title, onCapture, onClose }) {
 
   const videoRef = useRef(null);
@@ -80,9 +80,9 @@ function CameraCapture({ title, onCapture, onClose }) {
       <div className="camera-modal" onClick={(event) => event.stopPropagation()}>
 
         <div className="camera-modal-header">
-          <span>{title}</span>
+          <span className="camera-modal-title">{title}</span>
           <button type="button" className="camera-modal-close" onClick={onClose} aria-label="Close camera">
-            ✕
+            <Close size={18} />
           </button>
         </div>
 
@@ -94,7 +94,7 @@ function CameraCapture({ title, onCapture, onClose }) {
 
         <div className="camera-modal-actions">
           <button type="button" className="camera-modal-capture" onClick={handleCapture} disabled={!ready}>
-            📷 Capture
+            <Camera size={18} /> Capture
           </button>
         </div>
 

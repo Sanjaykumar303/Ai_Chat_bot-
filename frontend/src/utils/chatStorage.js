@@ -6,9 +6,14 @@
 // and TTL-based (see backend/services/document_store.py), so it
 // wouldn't survive a page refresh anyway; persisting a document_id here
 // would just produce a UI that claims a file is still attached when the
-// backend has already forgotten it. Attachment state instead lives
-// entirely inside ChatBox.jsx and is discarded whenever a chat is
-// switched (see Chat.jsx's key={activeSession.id} on <ChatBox>).
+// backend has already forgotten it. Attachment state instead lives in
+// Chat.jsx's own sessionRuntime map, keyed by session id and never
+// persisted here - it survives switching away from a chat and back
+// (only one <ChatBox> is ever mounted, for the active session, but
+// sessionRuntime itself lives above it in Chat.jsx, unaffected by that
+// component mounting/unmounting) and is only ever cleared by an
+// explicit remove/replace or by the session itself being deleted, never
+// merely by switching.
 
 const SESSIONS_KEY = "ai_chat_sessions_v1";
 const ACTIVE_SESSION_KEY = "ai_chat_active_session_v1";

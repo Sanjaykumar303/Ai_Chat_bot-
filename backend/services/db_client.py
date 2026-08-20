@@ -183,29 +183,92 @@ def _find_date_column(columns):
     return None
 
 
-def _table_date_range(conn, table_name, columns):
-    """Return "col: YYYY-MM-DD to YYYY-MM-DD" for the table's date column,
-    or "" if it has none. Actual MIN/MAX read fresh each schema load - this
-    is what lets the SQL-generation prompt see when a table's data doesn't
-    fully cover a requested period, for any table/date range, not just
-    ones this code happens to know about in advance."""
+# Small, bounded set of the actual distinct values a low-cardinality
+# character column holds (e.g. a status/category column) - shown inline
+# in the schema description below so the SQL-generation prompt can filter
+# on the REAL stored spelling/casing (e.g. "overdue") instead of guessing
+# one (e.g. "Overdue") and silently matching nothing. A genuinely
+# free-text column (name, email, description) will have far more than
+# this many distinct values and is silently skipped - no per-column-name
+# guessing needed, same "show a fact about the live data instead of
+# leaving the model to invent one" idea the date-range annotation below
+# already uses for date columns.
+MAX_DISTINCT_VALUES = 12
+
+
+def _is_character_type(sqlalchemy_type):
+    type_name = str(sqlalchemy_type).lower()
+    return any(marker in type_name for marker in ("char", "text"))
+
+
+def _table_extra_facts(conn, table_name, columns):
+    """One combined query per table computing BOTH the date-range
+    annotation and every character column's low-cardinality distinct-
+    value set, in a single round trip.
+
+    This exists because round-trip COUNT, not per-query complexity, is
+    what actually dominates schema-load latency against a remote/hosted
+    DB - confirmed live against this project's own Supabase instance,
+    where a trivial `SELECT 1` and a real `SELECT DISTINCT ...` both cost
+    ~130ms. An earlier version of this annotation issued one query per
+    date column PLUS one query per character column, which pushed a full
+    schema reload (DB_SCHEMA_CACHE_TTL) past 25 seconds on this project's
+    real 22-table schema (43 character columns alone) - a real regression
+    introduced while adding the distinct-value annotation, caught and
+    fixed the same session via live timing, not just by review. This
+    brings a full reload back down to roughly one round trip per table.
+
+    Built as a single SELECT with no FROM clause at the top level - every
+    value is instead its own self-contained scalar subquery (each with
+    its own FROM/WHERE/LIMIT) - so it always returns exactly one row
+    regardless of whether the underlying table is empty, with no
+    aggregate-vs-non-aggregate row-count ambiguity to handle.
+
+    Returns (date_range_note: str, column_values: {col_name: [values]}).
+    Both come back empty on any failure or if the table has neither a
+    date column nor a character column - non-fatal, matching this
+    function's own two predecessors' behavior.
+    """
 
     date_column = _find_date_column(columns)
-    if date_column is None:
-        return ""
+    char_columns = [col for col in columns if _is_character_type(col["type"])]
+
+    select_parts = []
+    if date_column is not None:
+        select_parts.append(f'(SELECT MIN("{date_column}") FROM "{table_name}") AS date_min')
+        select_parts.append(f'(SELECT MAX("{date_column}") FROM "{table_name}") AS date_max')
+    for col in char_columns:
+        select_parts.append(
+            f'(SELECT array_agg(v) FROM (SELECT DISTINCT "{col["name"]}" AS v FROM "{table_name}" '
+            f'WHERE "{col["name"]}" IS NOT NULL LIMIT {MAX_DISTINCT_VALUES + 1}) sub) AS "vals__{col["name"]}"'
+        )
+
+    if not select_parts:
+        return "", {}
 
     try:
-        result = conn.execute(
-            text(f'SELECT MIN("{date_column}"), MAX("{date_column}") FROM "{table_name}"')
-        )
-        min_date, max_date = result.first()
+        row = conn.execute(text("SELECT " + ", ".join(select_parts))).mappings().first()
     except Exception:
-        return ""  # non-fatal - schema description just won't have a range for this table
+        return "", {}  # non-fatal - schema description just won't have these facts for this table
 
-    if min_date is None or max_date is None:
-        return f" -- {date_column}: no rows"
+    if row is None:
+        return "", {}
 
-    return f" -- {date_column} data available from {min_date} to {max_date}"
+    date_range_note = ""
+    if date_column is not None:
+        min_date, max_date = row["date_min"], row["date_max"]
+        if min_date is None or max_date is None:
+            date_range_note = f" -- {date_column}: no rows"
+        else:
+            date_range_note = f" -- {date_column} data available from {min_date} to {max_date}"
+
+    column_values = {}
+    for col in char_columns:
+        values = row.get(f"vals__{col['name']}")
+        if values and len(values) <= MAX_DISTINCT_VALUES:
+            column_values[col["name"]] = list(values)
+
+    return date_range_note, column_values
 
 
 def _load_schema():
@@ -223,15 +286,42 @@ def _load_schema():
         if DB_QUERY_ALLOWED_TABLES:
             table_names = [name for name in table_names if name.lower() in DB_QUERY_ALLOWED_TABLES]
 
+        # get_multi_columns() reflects every table's columns in ONE round
+        # trip instead of one per table via get_columns() in a loop -
+        # confirmed live against this project's real 22-table schema:
+        # get_columns() x22 cost ~13s (each call itself issuing several
+        # catalog queries), get_multi_columns() for the same 22 tables
+        # cost ~1.5s. This was the single largest contributor to a slow
+        # cold schema load, bigger than the per-table _table_extra_facts
+        # calls below - fixed the same session those were added in, once
+        # live timing showed it was the actual bottleneck.
+        all_columns = inspector.get_multi_columns(schema=DB_SCHEMA_NAME)
+
         lines = []
         table_terms = set()
         column_terms = set()
 
         with engine.connect() as conn:
             for table_name in table_names:
-                columns = inspector.get_columns(table_name, schema=DB_SCHEMA_NAME)
-                column_descriptions = ", ".join(f"{col['name']} {col['type']}" for col in columns)
-                date_range_note = _table_date_range(conn, table_name, columns)
+                columns = all_columns[(DB_SCHEMA_NAME, table_name)]
+                date_range_note, column_values = _table_extra_facts(conn, table_name, columns)
+
+                column_parts = []
+                for col in columns:
+                    part = f"{col['name']} {col['type']}"
+                    distinct_values = column_values.get(col["name"])
+                    if distinct_values:
+                        # Doubled single quotes, same escaping SQL itself
+                        # uses for a literal - keeps a value like "Owner's
+                        # Equity" from breaking out of its own quoting in
+                        # the displayed schema, and shows the value in
+                        # exactly the form a WHERE clause would need to
+                        # write it.
+                        escaped_values = (value.replace("'", "''") for value in distinct_values)
+                        values_text = ", ".join(f"'{value}'" for value in escaped_values)
+                        part += f" [values: {values_text}]"
+                    column_parts.append(part)
+                column_descriptions = ", ".join(column_parts)
                 lines.append(f"Table {table_name}({column_descriptions}){date_range_note}")
 
                 lower_name = table_name.lower()

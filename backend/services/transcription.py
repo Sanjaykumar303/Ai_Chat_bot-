@@ -33,12 +33,10 @@ class TranscriptionError(Exception):
     """Raised with a user-facing message already attached."""
 
 
-# Maps the language_hint code the frontend's language dropdown sends
-# (see frontend/src/components/ChatBox.jsx's LANGUAGE_HINT_OPTIONS) to a
-# name Gemini can follow a "the speaker is speaking ___" instruction
-# with - same manual-override idea the old Whisper path had (auto-detect
-# is the default and works fine for most speech, but a user who already
-# knows which language they're about to speak can force it).
+# Maps an optional language_hint code (routes/transcribe.py's
+# language_hint form field - no current UI sends one, transcription is
+# always auto-detected in practice) to a name Gemini can follow a "the
+# speaker is speaking ___" instruction with.
 LANGUAGE_HINT_NAMES = {
     "en": "English",
     "ta": "Tamil",

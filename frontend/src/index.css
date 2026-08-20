@@ -19,6 +19,10 @@
     --color-text-muted:#7a7492;
     --color-danger:#b71c1c;
     --color-danger-bg:#ffebee;
+    --color-success:#2e7d32;
+    --color-success-bg:#e8f5e9;
+    --color-warning:#f9a825;
+    --color-warning-bg:#fff8e1;
 
     --radius-sm:10px;
     --radius-md:16px;

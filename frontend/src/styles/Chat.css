@@ -5,14 +5,19 @@
 }
 
 .chat-layout{
+    /* No max-width/centering here (there used to be a 1400px cap) - on
+       a wide monitor that left a large empty margin outside BOTH the
+       sidebar's left edge and the chat panel's right edge, which read as
+       wasted space rather than intentional. Full-bleed instead - see
+       .chat-messages/.chat-form/.chat-toolbar (no width cap of their
+       own either, same reasoning: a fixed reading-column width here
+       just relocates the same complaint rather than fixing it). */
     display:flex;
     align-items:stretch;
     flex:1;
     min-height:0;
     gap:16px;
     width:100%;
-    max-width:1400px;
-    margin:0 auto;
     padding:16px;
 }
 
@@ -43,6 +48,10 @@
 }
 
 .chat-sidebar-new-button{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
     background:var(--gradient-accent);
     color:white;
     border:none;
@@ -78,6 +87,39 @@
 
 .chat-sidebar-close:hover{
     background:var(--color-surface-alt);
+}
+
+/* A second launch point for components/VoiceChat.jsx, alongside the
+   .voice-chat-button already inside ChatBox.jsx's own form (see that
+   class further down) - same pill shape/sizing as .chat-sidebar-new-
+   button right above it, but the quieter accent-light treatment
+   .voice-chat-button already uses, so it reads as "also opens a real-
+   time voice session" without competing with New Chat's own bold
+   gradient for attention. */
+.chat-sidebar-voice-button{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:6px;
+    width:100%;
+    background:var(--color-accent-light);
+    color:var(--color-accent-hover);
+    border:none;
+    padding:10px 16px;
+    border-radius:var(--radius-pill);
+    font-size:14px;
+    font-weight:600;
+    cursor:pointer;
+    transition:background 0.15s ease;
+}
+
+.chat-sidebar-voice-button:hover:not(:disabled){
+    background:var(--color-border);
+}
+
+.chat-sidebar-voice-button:disabled{
+    opacity:0.5;
+    cursor:not-allowed;
 }
 
 .chat-sidebar-label{
@@ -147,6 +189,41 @@
     outline:none;
 }
 
+/* Inactive-session status (see ChatSidebar.jsx's sessionStatus) - the
+   active session never renders one of these, it has the existing
+   Thinking UI inside ChatBox instead. flex-shrink:0 so it always stays
+   fully visible; .chat-session-title's own flex:1 + ellipsis is what
+   yields the space for it. */
+.chat-session-status{
+    display:flex;
+    align-items:center;
+    gap:4px;
+    font-size:11px;
+    font-weight:500;
+    flex-shrink:0;
+    white-space:nowrap;
+}
+
+.chat-session-status-processing{
+    color:var(--color-text-muted);
+}
+
+.chat-session-status-new{
+    color:var(--color-accent-hover);
+}
+
+.chat-session-status-dot{
+    width:6px;
+    height:6px;
+    border-radius:50%;
+    background:var(--color-accent);
+    flex-shrink:0;
+}
+
+.chat-session-status-failed{
+    color:var(--color-danger);
+}
+
 .chat-session-rename,
 .chat-session-delete{
     display:flex;
@@ -213,13 +290,36 @@
 }
 
 .source-badge{
-    display:inline-block;
+    display:inline-flex;
+    align-items:center;
+    gap:4px;
     background:var(--color-surface-alt);
     color:#455a64;
     border-radius:4px;
     padding:1px 6px;
     margin-right:6px;
     font-style:normal;
+}
+
+/* A web source badge is the only one that's a real link (document and
+   database badges are plain spans) - it should read as part of the same
+   badge row until hovered, not as a stray blue underlined link. */
+a.source-badge{
+    text-decoration:none;
+    max-width:240px;
+}
+
+a.source-badge:hover{
+    background:var(--color-accent-light);
+    color:var(--color-accent-hover);
+}
+
+/* Page titles from a search result run long. Truncating the label
+   (rather than the badge) keeps the globe icon and padding intact. */
+.source-badge-label{
+    overflow:hidden;
+    white-space:nowrap;
+    text-overflow:ellipsis;
 }
 
 .chat-container h1{
@@ -292,9 +392,32 @@
     padding:24px;
 }
 
+.chat-example-prompts{
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:center;
+    gap:8px;
+    margin-top:4px;
+}
+
+.chat-example-prompt{
+    background:var(--color-surface);
+    color:var(--color-text);
+    border:1px solid var(--color-border);
+    border-radius:var(--radius-pill);
+    padding:8px 16px;
+    font-size:14px;
+    cursor:pointer;
+    transition:background 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-example-prompt:hover{
+    background:var(--color-surface-alt);
+    border-color:var(--color-accent);
+}
+
 .chat-empty-icon{
-    font-size:40px;
-    line-height:1;
+    color:var(--color-accent);
     filter:drop-shadow(0 4px 10px rgba(26,35,126,0.15));
 }
 
@@ -334,12 +457,12 @@
     display:flex;
     align-items:center;
     justify-content:center;
-    font-size:15px;
     margin-top:2px;
 }
 
 .chat-avatar-user{
     background:var(--color-accent-light);
+    color:var(--color-accent-hover);
 }
 
 .chat-avatar-ai{
@@ -348,8 +471,28 @@
     box-shadow:var(--shadow-sm);
 }
 
+/* Wraps the bubble (.chat-message-body) and, for a user message, the
+   actions row below it - column layout is what lets the actions sit
+   under the bubble rather than inside its padding, while still sharing
+   its side of the row (right-aligned to match the user bubble, left for
+   the assistant's, which is the only child here anyway). */
+.chat-message-content{
+    display:flex;
+    flex-direction:column;
+    min-width:0;
+}
+
+.chat-message.user .chat-message-content{
+    align-items:flex-end;
+}
+
+.chat-message.ai .chat-message-content{
+    align-items:flex-start;
+}
+
 .chat-message-body{
     min-width:0;
+    max-width:100%;
     padding:10px 14px;
     border-radius:var(--radius-lg);
 }
@@ -498,6 +641,75 @@
     font-style:italic;
 }
 
+/* ChatGPT-style Copy/Edit/Share row under a USER message only (AI
+   messages get .speaker-button instead, above) - a sibling of the
+   bubble (.chat-message-body) inside .chat-message-content, not nested
+   inside it, so these render below the bubble's own colored background
+   rather than inside it. Hidden until hover or keyboard focus on
+   desktop - opacity+pointer-events rather than display:none, so a
+   keyboard user tabbing onto one of these buttons still reaches it
+   (pointer-events:none only blocks mouse/touch, not focus) and the
+   reveal itself is a plain opacity transition rather than a
+   layout-shifting one. */
+.chat-message-actions{
+    display:flex;
+    align-items:center;
+    gap:2px;
+    margin-top:4px;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity 0.15s ease;
+}
+
+.chat-message:hover .chat-message-actions,
+.chat-message:focus-within .chat-message-actions{
+    opacity:1;
+    pointer-events:auto;
+}
+
+/* Touch devices have no hover to reveal these with, so they stay
+   visible outright there - "accessible on mobile" per this feature's
+   own requirement, not just present-but-unreachable. */
+@media (hover: none){
+    .chat-message-actions{
+        opacity:1;
+        pointer-events:auto;
+    }
+}
+
+.chat-message-action{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    background:none;
+    border:none;
+    cursor:pointer;
+    width:28px;
+    height:28px;
+    color:var(--color-text-muted);
+    opacity:0.85;
+    border-radius:var(--radius-sm);
+}
+
+.chat-message-action:hover:not(:disabled){
+    opacity:1;
+    color:var(--color-accent-hover);
+    background:var(--color-surface-alt);
+}
+
+.chat-message-action:disabled{
+    opacity:0.35;
+    cursor:not-allowed;
+}
+
+.chat-message-action-feedback{
+    font-size:11px;
+    font-weight:600;
+    color:var(--color-text-muted);
+    margin-left:2px;
+    white-space:nowrap;
+}
+
 /* Typing indicator (Loader.jsx), rendered as its own AI-style bubble */
 
 .chat-typing .chat-message-body{
@@ -566,6 +778,9 @@
 }
 
 .chat-form button{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
     background:var(--gradient-accent);
     color:white;
     border:none;
@@ -590,24 +805,7 @@
     cursor:not-allowed;
 }
 
-.language-select{
-    padding:10px 12px;
-    border:1px solid var(--color-border);
-    border-radius:999px;
-    font-size:13px;
-    background:var(--color-surface);
-    color:var(--color-text);
-    cursor:pointer;
-    max-width:120px;
-}
-
-.language-select:disabled{
-    background:var(--color-surface-alt);
-    cursor:not-allowed;
-}
-
 .mic-button{
-    padding:0;
     width:44px;
     height:44px;
     font-size:17px;
@@ -619,8 +817,12 @@
 }
 
 /* Same specificity reasoning as .chat-form .attachment-menu-button
-   above - a bare .mic-button loses to .chat-form button's background. */
+   above - a bare .mic-button loses to .chat-form button's background.
+   `padding:0` has to live here for the same reason: from a bare
+   .mic-button it lost to .chat-form button's 11px/20px, which left a
+   4px-wide content box that squashed the mic icon down to a sliver. */
 .chat-form .mic-button{
+    padding:0;
     background:var(--color-accent-light);
     color:var(--color-accent-hover);
 }
@@ -643,10 +845,90 @@
     cursor:not-allowed;
 }
 
+/* Opens components/VoiceChat.jsx (real-time Gemini Live voice) - same
+   sizing/shape as .mic-button right next to it, deliberately NOT the
+   same color treatment (that one turns red while recording; this one
+   has no such state of its own to show inline, it just opens the
+   modal), so the two read as related but distinct controls. */
+.voice-chat-button{
+    width:44px;
+    height:44px;
+    border-radius:50%;
+    flex-shrink:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
+.chat-form .voice-chat-button{
+    padding:0;
+    background:var(--color-accent-light);
+    color:var(--color-accent-hover);
+}
+
+.chat-form .voice-chat-button:hover:not(:disabled){
+    background:var(--color-border);
+}
+
 @keyframes mic-pulse{
     0%{ box-shadow:0 0 0 0 rgba(198,40,40,0.45); }
     70%{ box-shadow:0 0 0 10px rgba(198,40,40,0); }
     100%{ box-shadow:0 0 0 0 rgba(198,40,40,0); }
+}
+
+/* Manual Web Search toggle - same sizing/shape as .mic-button/
+   .voice-chat-button right next to it, but its own accent color while
+   active (rather than .mic-button.recording's red, which reads as "in
+   progress") since this is a sticky, user-set state, not a transient one. */
+.web-search-button{
+    width:44px;
+    height:44px;
+    border-radius:50%;
+    flex-shrink:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
+.chat-form .web-search-button{
+    padding:0;
+    background:var(--color-accent-light);
+    color:var(--color-accent-hover);
+}
+
+.chat-form .web-search-button:hover:not(:disabled){
+    background:var(--color-border);
+}
+
+.web-search-button.active{
+    background:var(--color-accent);
+    color:#fff;
+}
+
+.web-search-button.active:hover{
+    background:var(--color-accent-hover);
+}
+
+.chat-web-search-indicator{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    font-size:12px;
+    color:var(--color-accent-hover);
+    font-weight:600;
+    margin:-4px 0 10px;
+}
+
+/* Rotates any icons/Loader.jsx spinner (mic button while transcribing,
+   Send button while a request is in flight) - a plain CSS animation
+   rather than SVG <animate>, so it respects the same rendering path as
+   every other animation in this file. */
+.icon-spin{
+    animation:icon-spin-rotate 0.8s linear infinite;
+}
+
+@keyframes icon-spin-rotate{
+    to{ transform:rotate(360deg); }
 }
 
 .chat-recording-status{
@@ -667,13 +949,6 @@
     animation:mic-pulse 1.4s ease-in-out infinite;
 }
 
-.chat-detected-language{
-    font-size:12px;
-    color:var(--color-text-muted);
-    font-style:italic;
-    margin:-4px 0 10px;
-}
-
 /* Attachment "+" menu, ChatGPT-style */
 
 .attachment-menu-wrapper{
@@ -684,7 +959,6 @@
 .attachment-menu-button{
     width:44px;
     height:44px;
-    padding:0;
     border-radius:50%;
     font-size:20px;
     line-height:1;
@@ -700,8 +974,11 @@
    than a bare ".x", since ".chat-form button"'s own specificity (one
    class + one element) would otherwise win over a bare single-class
    override and silently keep the gradient here regardless of source
-   order. */
+   order. `padding:0` needs the same treatment: from a bare
+   .attachment-menu-button it lost to ".chat-form button"'s 11px/20px,
+   leaving a 4px-wide content box that squashed the icon to a sliver. */
 .chat-form .attachment-menu-button{
+    padding:0;
     background:var(--color-accent-light);
     color:var(--color-accent-hover);
 }
@@ -726,6 +1003,9 @@
 }
 
 .attachment-menu-item{
+    display:flex;
+    align-items:center;
+    gap:8px;
     background:none;
     color:var(--color-text);
     border:none;
@@ -737,7 +1017,26 @@
     white-space:nowrap;
 }
 
-.attachment-menu-item:hover{
+/* Same specificity problem as .chat-form .attachment-menu-button above -
+   these are plain <button> descendants of .chat-form too (rendered
+   inside the dropdown, but still nested in the DOM), so ".chat-form
+   button"'s own white-on-purple-pill styling (background/color/padding)
+   was silently winning over the plain single-class rule right above,
+   leaving this menu's text unreadably white on its own light dropdown
+   background. */
+.chat-form .attachment-menu-item{
+    background:none;
+    color:var(--color-text);
+    padding:10px 12px;
+}
+
+.attachment-menu-item svg{
+    color:var(--color-text-muted);
+    flex-shrink:0;
+}
+
+.attachment-menu-item:hover,
+.chat-form .attachment-menu-item:hover{
     background:var(--color-surface-alt);
 }
 
@@ -763,7 +1062,9 @@
 }
 
 .attachment-preview-icon{
-    font-size:18px;
+    display:flex;
+    align-items:center;
+    color:var(--color-text-muted);
     flex-shrink:0;
 }
 
@@ -834,6 +1135,12 @@
     margin-bottom:12px;
 }
 
+.camera-modal-title{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+}
+
 .camera-modal-close{
     display:flex;
     align-items:center;
@@ -873,6 +1180,9 @@
 }
 
 .camera-modal-capture{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
     background:var(--color-accent);
     color:white;
     border:none;
@@ -891,9 +1201,681 @@
     cursor:not-allowed;
 }
 
-/* Small phones: the input row (attachment + text + language + mic + send)
-   no longer fits on one line - the text input gets its own full-width
-   row on top, the remaining controls form a second row underneath. */
+/* Real-time Voice Chat - a dedicated, full-screen takeover
+   (components/VoiceChat.jsx), not a small centered dialog: a
+   ChatGPT-style live voice mode, entered from its own button in
+   ChatSidebar.jsx. Fixed, full-viewport, above everything else in the
+   app (same z-index tier .camera-modal-backdrop/.attachment-menu use
+   for the same reason - nothing on the normal chat screen should be
+   reachable while this is open). */
+
+.voice-screen{
+    position:fixed;
+    inset:0;
+    z-index:100;
+    display:flex;
+    flex-direction:column;
+    background:
+        radial-gradient(circle at 15% 10%, var(--color-accent-light) 0%, transparent 45%),
+        var(--color-bg);
+}
+
+.voice-screen-center{
+    position:relative;
+    flex:1;
+    min-height:0;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:20px;
+    padding:16px;
+}
+
+/* Two-panel layout: LEFT is the orb/state/controls (nothing scrollable,
+   just "what's happening right now"), RIGHT is the full conversation
+   history - a real ChatGPT-Voice-style split, not the old single
+   centered column. Edge-to-edge (this whole screen is already a fixed,
+   full-viewport takeover - see the module docstring in VoiceChat.jsx),
+   divided by a single vertical border rather than a floating card gap.
+   Row on desktop, stacked on mobile (see the 768px breakpoint below,
+   matching this project's existing mobile breakpoint in this same file). */
+.voice-layout{
+    flex:1;
+    min-height:0;
+    display:flex;
+}
+
+.voice-panel{
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+}
+
+.voice-panel-left{
+    flex:0 0 300px;
+    border-right:1px solid var(--color-border);
+    background:var(--color-surface);
+}
+
+.voice-panel-right{
+    flex:1;
+    min-width:0;
+    background:var(--color-surface);
+}
+
+/* Shared by both panels' top row (Live Voice Chat / Conversation) - same
+   height/border so the vertical divider between panels lines up cleanly
+   across both header rows. */
+.voice-panel-header{
+    flex-shrink:0;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:18px 20px;
+    border-bottom:1px solid var(--color-border);
+    font-weight:700;
+    font-size:15px;
+    color:var(--color-accent);
+}
+
+.voice-panel-header-right{
+    justify-content:space-between;
+}
+
+.voice-panel-header-title{
+    color:var(--color-text);
+}
+
+.voice-panel-header-actions{
+    display:flex;
+    align-items:center;
+    gap:10px;
+}
+
+.voice-screen-close{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:var(--color-surface);
+    border:1px solid var(--color-border);
+    color:var(--color-text-muted);
+    cursor:pointer;
+    width:32px;
+    height:32px;
+    border-radius:50%;
+    flex-shrink:0;
+}
+
+.voice-screen-close:hover{
+    background:var(--color-surface-alt);
+    color:var(--color-text);
+}
+
+/* Only used on the error screen, which has no panel header of its own
+   to hold a close button - positioned relative to .voice-screen-center. */
+.voice-screen-close-floating{
+    position:absolute;
+    top:20px;
+    right:20px;
+    width:40px;
+    height:40px;
+    box-shadow:var(--shadow-sm);
+}
+
+.voice-clear-button{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    background:var(--color-surface);
+    border:1px solid var(--color-border);
+    color:var(--color-danger);
+    font-size:13px;
+    font-weight:600;
+    padding:6px 14px;
+    border-radius:999px;
+    cursor:pointer;
+}
+
+.voice-clear-button:hover:not(:disabled){
+    background:var(--color-danger-bg);
+}
+
+.voice-clear-button:disabled{
+    opacity:0.5;
+    cursor:not-allowed;
+}
+
+/* The centered content between the left panel's header and its bottom
+   controls - orb, current-state text, live bars, and the Listening/
+   Thinking/Speaking list, vertically centered in whatever room is left. */
+.voice-panel-left-body{
+    flex:1;
+    min-height:0;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:18px;
+    padding:20px;
+    text-align:center;
+    overflow:hidden;
+}
+
+/* The orb - a soft violet gradient circle, its size/opacity driven
+   frame-by-frame from JS (see VoiceChat.jsx's rAF loop) reacting to
+   real audio level: the user's own mic input while listening, Gemini's
+   spoken reply while speaking. The base pulse/glow keyframes below run
+   underneath that at all times, so it never looks fully static even in
+   a silent moment between the JS-driven scale updates. */
+.voice-orb-wrapper{
+    position:relative;
+    width:190px;
+    height:190px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
+.voice-orb{
+    width:160px;
+    height:160px;
+    border-radius:50%;
+    background:var(--gradient-accent);
+    box-shadow:0 0 60px 10px rgba(124,58,237,0.35);
+    transition:background 0.3s ease;
+    will-change:transform, opacity;
+}
+
+/* A static ring centered on the orb whenever it's not already showing
+   the connecting/thinking spinner (see VoiceChat.jsx's own ring-vs-
+   spinner branch) - purely decorative, gives the orb a "live" look even
+   while its own size/opacity animation is between beats. */
+.voice-orb-ring{
+    position:absolute;
+    width:46px;
+    height:46px;
+    border-radius:50%;
+    border:3px solid rgba(255,255,255,0.85);
+    pointer-events:none;
+}
+
+.voice-orb-connecting{
+    background:linear-gradient(135deg, var(--color-border), var(--color-accent-2));
+    animation:voice-orb-breathe 2.4s ease-in-out infinite;
+}
+
+.voice-orb-listening{
+    animation:voice-orb-breathe 2.4s ease-in-out infinite;
+}
+
+/* A real database question's tool-call round trip (see backend/services/
+   voice_live_service.py) has been measured at 13-20s live - noticeably
+   slower than the ~2.4s "listening" breathe, so this pulses faster/
+   brighter to read as "actively working on it" rather than the same
+   idle waiting animation, on top of the "Thinking..." label and spinner
+   icon (see VoiceChat.jsx) making the state itself unambiguous. */
+.voice-orb-thinking{
+    background:linear-gradient(135deg, var(--color-accent), var(--color-accent-2));
+    animation:voice-orb-think 1.1s ease-in-out infinite;
+}
+
+.voice-orb-speaking{
+    background:linear-gradient(135deg, var(--color-accent-2), var(--color-accent));
+}
+
+@keyframes voice-orb-breathe{
+    0%, 100%{ filter:brightness(1); }
+    50%{ filter:brightness(1.08); }
+}
+
+@keyframes voice-orb-think{
+    0%, 100%{ filter:brightness(1); }
+    50%{ filter:brightness(1.18); }
+}
+
+.voice-orb-spinner{
+    position:absolute;
+    color:white;
+}
+
+.voice-screen-status{
+    font-size:15px;
+    font-weight:700;
+    color:var(--color-text-muted);
+    letter-spacing:0.02em;
+    margin:0;
+}
+
+.voice-screen-status-listening{
+    color:var(--color-accent-hover);
+}
+
+.voice-screen-status-thinking{
+    color:var(--color-accent-hover);
+}
+
+.voice-screen-status-speaking{
+    color:var(--color-success);
+}
+
+/* A small equalizer, purely decorative - only shown for the two states
+   with actual audio moving (listening to the user, speaking Gemini's
+   reply); connecting/thinking already have the orb's own spinner to say
+   "something's happening" instead. */
+.voice-live-bars{
+    display:flex;
+    align-items:flex-end;
+    justify-content:center;
+    gap:4px;
+    height:20px;
+}
+
+.voice-live-bars span{
+    width:3px;
+    height:100%;
+    background:var(--color-accent);
+    border-radius:2px;
+    transform-origin:bottom;
+    animation:voice-bars-bounce 1s ease-in-out infinite;
+}
+
+.voice-live-bars span:nth-child(1){ animation-delay:0s; }
+.voice-live-bars span:nth-child(2){ animation-delay:0.1s; }
+.voice-live-bars span:nth-child(3){ animation-delay:0.2s; }
+.voice-live-bars span:nth-child(4){ animation-delay:0.3s; }
+.voice-live-bars span:nth-child(5){ animation-delay:0.4s; }
+
+@keyframes voice-bars-bounce{
+    0%, 100%{ transform:scaleY(0.35); }
+    50%{ transform:scaleY(1); }
+}
+
+/* The persistent Listening/Thinking/Speaking list - distinct from
+   .voice-screen-status above (which is just the CURRENT one, as plain
+   text): this shows all three at once, with a dot marking whichever one
+   is active, so "current state" reads as a state machine, not a single
+   changing label. */
+.voice-state-list{
+    width:100%;
+    max-width:220px;
+    display:flex;
+    flex-direction:column;
+    background:var(--color-surface);
+    border:1px solid var(--color-border);
+    border-radius:var(--radius-md);
+    box-shadow:var(--shadow-sm);
+    padding:6px;
+    gap:2px;
+}
+
+.voice-state-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:8px 10px;
+    border-radius:8px;
+    color:var(--color-text-muted);
+    font-size:13px;
+    font-weight:600;
+}
+
+.voice-state-row-icon{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    flex-shrink:0;
+}
+
+.voice-state-row-label{
+    flex:1;
+    text-align:left;
+}
+
+.voice-state-row-dot{
+    width:8px;
+    height:8px;
+    border-radius:50%;
+    background:var(--color-border);
+    flex-shrink:0;
+}
+
+.voice-state-row.active{
+    background:var(--color-accent-light);
+    color:var(--color-accent-hover);
+}
+
+.voice-state-row.active .voice-state-row-dot{
+    background:var(--color-accent);
+}
+
+/* RIGHT panel: the scrollable conversation history - every entry
+   VoiceChat.jsx has pushed into `transcript` this session, auto-scrolled
+   to the latest via transcriptEndRef (see that component's own effect).
+   A real scrolling log now, not the old fixed-height fade-masked strip -
+   this panel IS the conversation view, not a light-touch caption. */
+.voice-transcript-panel{
+    flex:1;
+    min-height:0;
+    overflow-y:auto;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+    padding:20px;
+}
+
+.voice-transcript-empty{
+    margin:auto;
+    color:var(--color-text-muted);
+    font-size:14px;
+    text-align:center;
+}
+
+/* Chat bubbles - the "You" bubble uses the same light-lavender/white
+   palette as the rest of this app's accent system (--color-accent-light,
+   the same token .chat-avatar-user already uses) rather than a solid
+   gradient fill, and the AI bubble is a bordered white card - both read
+   as this app's own purple/white design language without copying
+   .chat-message-body's exact gradient-fill treatment. */
+.voice-bubble{
+    max-width:78%;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+    animation:chat-message-in 0.22s ease-out;
+}
+
+.voice-bubble-you{
+    align-self:flex-end;
+    align-items:flex-end;
+}
+
+.voice-bubble-assistant{
+    align-self:flex-start;
+    align-items:flex-start;
+}
+
+.voice-bubble-sender{
+    font-weight:700;
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.02em;
+    color:var(--color-accent-hover);
+    padding:0 4px;
+}
+
+.voice-bubble-assistant .voice-bubble-sender{
+    color:var(--color-text-muted);
+}
+
+/* Text + timestamp share one flex row so a short message keeps the time
+   inline on the same line, while a longer, wrapping one naturally pushes
+   the time down to sit at the bottom-right of the bubble instead. */
+.voice-bubble-card{
+    display:flex;
+    flex-wrap:wrap;
+    align-items:flex-end;
+    gap:2px 14px;
+    max-width:100%;
+    padding:10px 14px;
+    border-radius:var(--radius-lg);
+}
+
+.voice-bubble-you .voice-bubble-card{
+    background:var(--color-accent-light);
+    border-bottom-right-radius:4px;
+}
+
+.voice-bubble-assistant .voice-bubble-card{
+    background:var(--color-surface);
+    border:1px solid var(--color-border);
+    border-bottom-left-radius:4px;
+}
+
+.voice-bubble-text{
+    flex:1 1 160px;
+    font-size:14px;
+    line-height:1.5;
+    white-space:pre-wrap;
+    margin:0;
+    color:var(--color-text);
+}
+
+.voice-bubble-time{
+    margin-left:auto;
+    align-self:flex-end;
+    white-space:nowrap;
+    font-size:11px;
+    color:var(--color-text-muted);
+}
+
+/* A blinking caret on whichever bubble is still interim (entry.interim -
+   VoiceChat.jsx keeps updating this same entry in place as more of the
+   utterance/reply arrives) - shows "this is still arriving live" the
+   same way a text cursor does, without needing a separate loading state. */
+.voice-bubble-cursor{
+    display:inline-block;
+    width:2px;
+    height:14px;
+    margin-left:2px;
+    vertical-align:middle;
+    background:currentColor;
+    animation:voice-bubble-blink 1s step-end infinite;
+}
+
+@keyframes voice-bubble-blink{
+    0%, 100%{ opacity:1; }
+    50%{ opacity:0; }
+}
+
+.voice-bubble-interrupted{
+    font-size:11px;
+    font-style:italic;
+    opacity:0.75;
+}
+
+.voice-screen-error{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:12px;
+    max-width:340px;
+    text-align:center;
+    background:var(--color-surface);
+    border:1px solid var(--color-border);
+    border-radius:var(--radius-md);
+    box-shadow:var(--shadow-sm);
+    padding:28px 24px;
+}
+
+.voice-screen-error-icon{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    width:44px;
+    height:44px;
+    border-radius:50%;
+    background:var(--color-danger-bg);
+    color:var(--color-danger);
+}
+
+.voice-screen-error-message{
+    font-size:14px;
+    color:var(--color-text);
+}
+
+.voice-screen-retry{
+    background:var(--color-accent);
+    color:white;
+    border:none;
+    padding:9px 22px;
+    border-radius:999px;
+    font-size:14px;
+    font-weight:600;
+    cursor:pointer;
+}
+
+.voice-screen-retry:hover{
+    background:var(--color-accent-hover);
+}
+
+/* A thin status bar under the scrollable log - always visible while
+   connected, independent of whatever's in `transcript` (still correct
+   even right after Clear empties it, or before the first word arrives). */
+.voice-transcript-footer{
+    flex-shrink:0;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:12px 20px;
+    border-top:1px solid var(--color-border);
+    background:var(--color-surface-alt);
+    color:var(--color-text-muted);
+    font-size:13px;
+}
+
+.voice-screen-bottom{
+    flex-shrink:0;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:10px;
+    width:100%;
+    box-sizing:border-box;
+    padding:16px 24px 24px;
+    border-top:1px solid var(--color-border);
+}
+
+.voice-mic-tap-label{
+    margin:0;
+    font-size:13px;
+    font-weight:600;
+    color:var(--color-text-muted);
+}
+
+.voice-mic-toggle{
+    position:relative;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    width:76px;
+    height:76px;
+    border-radius:50%;
+    background:var(--color-surface);
+    border:1px solid var(--color-border);
+    box-shadow:var(--shadow-md);
+    color:var(--color-accent);
+    cursor:pointer;
+}
+
+.voice-mic-toggle:hover:not(:disabled){
+    background:var(--color-accent-light);
+}
+
+.voice-mic-toggle:disabled{
+    opacity:0.5;
+    cursor:not-allowed;
+}
+
+.voice-mic-toggle.muted{
+    background:var(--color-danger);
+    border-color:var(--color-danger);
+    color:white;
+}
+
+/* A plain diagonal line over the mic icon reads as "muted" without
+   needing a second SVG icon file - the same "reuse the existing icon,
+   don't add a new one for a single state" approach this app already
+   uses elsewhere (e.g. .mic-button.recording just recolors Mic.jsx).
+   Absolutely centered over the icon regardless of the button's own
+   flex layout, rather than being laid out as a flex sibling next to it. */
+.voice-mic-toggle.muted::after{
+    content:"";
+    position:absolute;
+    top:50%;
+    left:50%;
+    width:40px;
+    height:2px;
+    background:white;
+    transform:translate(-50%, -50%) rotate(-45deg);
+}
+
+/* An outline pill, not a solid-fill button - reads as "available but
+   destructive", matching .voice-clear-button's own outline-danger
+   treatment rather than .mic-button.recording's solid red (this is an
+   always-available action, not a live "recording in progress" state). */
+.voice-screen-end{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    width:100%;
+    box-sizing:border-box;
+    background:var(--color-danger-bg);
+    color:var(--color-danger);
+    border:1px solid var(--color-danger);
+    padding:10px 26px;
+    border-radius:999px;
+    font-size:14px;
+    font-weight:600;
+    cursor:pointer;
+}
+
+.voice-screen-end svg{
+    transform:rotate(135deg);
+}
+
+.voice-screen-end:hover{
+    background:var(--color-danger);
+    color:white;
+}
+
+/* Stacked layout: LEFT (orb/state/controls) on top, RIGHT (conversation
+   history) below, sharing the remaining height - matches this project's
+   existing mobile breakpoint (see e.g. .chat-sidebar above). */
+@media (max-width: 768px){
+    .voice-layout{
+        flex-direction:column;
+    }
+
+    .voice-panel-left{
+        flex:0 0 auto;
+        border-right:none;
+        border-bottom:1px solid var(--color-border);
+    }
+
+    .voice-panel-left-body{
+        gap:12px;
+        padding:16px;
+    }
+
+    .voice-orb-wrapper{
+        width:140px;
+        height:140px;
+    }
+
+    .voice-orb{
+        width:110px;
+        height:110px;
+    }
+
+    .voice-state-list{
+        max-width:280px;
+    }
+
+    .voice-screen-bottom{
+        padding:12px 20px 20px;
+    }
+
+    .voice-panel-right{
+        flex:1;
+        min-height:220px;
+    }
+}
+
+/* Small phones: the input row (attachment + text + mic + send) no longer
+   fits on one line - the text input gets its own full-width row on top,
+   the remaining controls form a second row underneath. */
 @media (max-width: 560px){
     .chat-box{
         padding:12px;
@@ -912,12 +1894,6 @@
     .chat-form input{
         flex:1 1 100%;
         order:-1;
-    }
-
-    .language-select{
-        flex:1;
-        max-width:none;
-        min-width:0;
     }
 
     .chat-form button[type="submit"]{

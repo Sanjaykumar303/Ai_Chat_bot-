@@ -14,6 +14,8 @@ from starlette.concurrency import run_in_threadpool
 from routes.chat import router as chat_router
 from routes.transcribe import router as transcribe_router
 from routes.documents import router as documents_router
+from routes.voice import router as voice_router
+from routes.export import router as export_router
 from services import db_client, document_store
 
 # How often the background sweep below removes expired uploaded
@@ -57,6 +59,8 @@ app.add_middleware(
 app.include_router(chat_router)
 app.include_router(transcribe_router)
 app.include_router(documents_router)
+app.include_router(voice_router)
+app.include_router(export_router)
 
 
 @app.on_event("startup")

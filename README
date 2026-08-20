@@ -1,127 +1,191 @@
-AI Document Assistant
-=====================
+AI Document, Database & Voice Assistant
+========================================
 
-Upload PDF, DOCX, or TXT files to build a knowledge base, then ask questions
-about them by typing or speaking. Answers come from Google Gemini, grounded
-only in the documents you've uploaded, with the source file (and page number,
-for PDFs) shown under each answer.
+A multi-modal assistant that answers questions three ways from one chat
+box: grounded in documents you upload, grounded in a real (read-only)
+Postgres/Supabase database, or general knowledge from Google Gemini (with
+an optional web-search toggle). Conversations persist per session, can be
+continued by voice through a live Gemini connection, and answers can be
+exported to Word/Excel.
 
-Tech: React (Vite) + FastAPI + Axios + Google Gemini + LangChain + FAISS
-      + pypdf + python-docx + browser Web Speech API
+Tech: React (Vite) + FastAPI + Google Gemini (google-genai) + Postgres/
+      Supabase (psycopg2 + SQLAlchemy) + scikit-learn (in-memory document
+      retrieval) + pypdf/pymupdf/python-docx + openpyxl (exports)
+      + WebSockets (Gemini Live voice)
 
-Pipeline: Upload -> Extract text -> Split into chunks -> Embed with Gemini
--> Store in a FAISS index on disk -> Retrieve the 3 most relevant chunks
-for a question -> Send only those chunks to Gemini -> Answer + sources.
+Answer modes (routed automatically per question by services/
+intent_router.py, or combined when a question needs more than one):
 
-No database is used. The FAISS index and its manifest live under
-backend/vectorstore/ and are rebuilt from your uploaded files if deleted -
-uploads are not replaced by new ones, they accumulate into the same
-knowledge base.
+  - DATABASE_QUERY    natural language -> SQL (services/db_query_service.py),
+                       run read-only against your Postgres/Supabase database,
+                       guarded by services/sql_guard.py (SELECT-only, table
+                       allowlist, row cap, statement timeout).
+  - PDF_QUERY          grounded in a file uploaded via POST /documents/upload
+                       (PDF/DOCX/TXT, plus images via Gemini OCR), held in
+                       memory only (services/document_store.py) and
+                       retrieved with TF-IDF - nothing is written to disk,
+                       nothing survives a restart.
+  - GENERAL_KNOWLEDGE  plain Gemini, optionally grounded with a live web
+                       search when "Web Search" is turned on in the chat box.
+  - HYBRID_QUERY       a question needing more than one of the above
+                       answered together (e.g. an uploaded PDF's numbers
+                       compared against a DB table).
+
+Every answer in a chat session is saved (services/chat_memory.py, in a
+dedicated `chat_memory` Postgres schema kept isolated from your business
+data/tables) so later questions in the same session can refer back to
+earlier ones. Voice conversations ("Voice Chat" in the sidebar, backend
+/ws/voice - a WebSocket to Gemini Live) reuse that same session memory
+and the same DATABASE_QUERY/GENERAL_KNOWLEDGE logic as typed chat.
 
 
 SETUP
 -----
 
-1. Add your Gemini API key
+1. Backend environment
 
-   Open backend/.env and replace the placeholder:
+   cd backend, copy .env.example to .env, and fill in:
 
-       GEMINI_API_KEY=your_real_key_here
+       GEMINI_API_KEY   - required. Free key at
+                          https://aistudio.google.com/apikey
 
-   A free key can be created at https://aistudio.google.com/apikey
+       SUPABASE_DB_URL  - optional; only needed for DATABASE_QUERY answers
+       (or the discrete PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE/
+       PGSSLMODE vars instead). Use a dedicated READ-ONLY Postgres role,
+       not a superuser.
 
+       DB_QUERY_ALLOWED_TABLES - strongly recommended once a DB is
+       connected, to limit which tables Gemini/SQL Guard can see.
 
-2. Start the backend (terminal 1, Windows)
+   See the comments in backend/.env.example for every other optional
+   knob (rate limiting, schema cache TTL, row limit, query timeout,
+   voice pipeline debug logging).
 
-   Requires Python 3.12 (pinned in backend/.python-version). Python 3.13
-   is NOT supported yet - faster-whisper's ctranslate2 dependency ships
-   a broken Windows wheel under 3.13 (its compiled extension is
-   mislabeled cp313 but was actually built for cp312), which crashes
-   voice input at startup. If you use pyenv-win, `pyenv local` in
-   backend/ will pick up the pin automatically.
+2. Start the backend (Windows)
 
-       rem 1. Install Python 3.12 if you don't have it
-       rem    https://www.python.org/downloads/release/python-3120/
-
-       rem 2. From the project root, create a fresh venv for the backend
+       rem 1. From the project root, create a venv for the backend
        cd backend
        py -3.12 -m venv venv
 
-       rem 3. Activate it
+       rem 2. Activate it
        venv\Scripts\activate
 
-       rem 4. Install dependencies
+       rem 3. Install dependencies
        pip install -r requirements.txt
 
-       rem 5. Run the server
+       rem 4. Run the server
        uvicorn main:app --reload
 
-   Runs on http://127.0.0.1:8000
+   Runs on http://127.0.0.1:8000. Python 3.12 is what CI and the Render
+   deployment both pin (backend/.python-version, render.yaml), so that is
+   what local dev matches for reproducibility - but nothing in the app
+   itself requires it anymore. (It used to: faster-whisper's ctranslate2
+   dependency shipped a broken Windows wheel under 3.13. That dependency
+   was removed when voice transcription moved to Gemini, so a 3.13 venv
+   works fine too if that is what you already have installed - this repo
+   is tested and passing under both.)
 
    venv/ and .env are both already excluded via .gitignore - never
    commit either one.
 
-
-3. Start the frontend (terminal 2)
+3. Start the frontend
 
        cd frontend
        npm install
        npm run dev
 
-   Runs on http://localhost:5173
+   Runs on http://localhost:5173. Optionally copy frontend/.env.example
+   to frontend/.env if the backend is not reachable at the default
+   http://127.0.0.1:8000.
+
+
+RUNNING TESTS
+-------------
+
+Backend (pytest; Gemini and the database are mocked, so no live network
+or DB connection is needed to run the suite):
+
+       cd backend
+       venv\Scripts\activate
+       pip install -r requirements-dev.txt
+       pytest -v
+
+Frontend (Node's built-in test runner, covers frontend/src/utils/*.js):
+
+       cd frontend
+       npm test
+
+Frontend lint + production build (what CI's frontend-build job runs):
+
+       cd frontend
+       npm run lint
+       npm run build
+
+.github/workflows/ci.yml runs the backend pytest step and both frontend
+steps above on every push/PR to main - that workflow is the source of
+truth for what "passing" means in this repo.
 
 
 HOW TO USE
 ----------
 
 1. Open http://localhost:5173
-2. Choose a PDF, DOCX, or TXT file and click Upload (repeat for more files -
-   each one adds to the same knowledge base)
-3. Click "Chat" in the top bar
-4. Type a question, or click the microphone button and speak it
-5. Click the speaker icon under any answer to hear it read aloud, or turn on
-   "Auto Speak" to have every new answer read automatically
+2. Optionally upload a PDF, DOCX, or TXT file (top bar) to add it to that
+   chat's document context - each upload attaches to the current chat
+   session only (not persisted across a page refresh) and replaces any
+   document already attached to it; there is no shared knowledge base
+   across sessions.
+3. Type a question, or click the microphone to speak it, or open
+   "Voice Chat" (sidebar) for a continuous live voice conversation.
+4. Turn on "Web Search" in the chat box if a general-knowledge question
+   needs current information beyond Gemini's training data.
+5. Click the speaker icon under any answer to hear it read aloud.
+6. Ask for an answer "as a Word document" / "as an Excel file" to get a
+   downloadable export of it.
 
 
 API
 ---
 
-POST /upload
-   Form data field: file
-   Response: { "message": "...", "filename": "...", "characters": 1234, "chunks": 5 }
-
-POST /chat
-   Request:  { "question": "What is Machine Learning?" }
-   Response: { "answer": "...", "sources": [{ "filename": "notes.pdf", "page": 2 }] }
+POST /chat                        ask a question; streams the answer back
+                                   as NDJSON. See routes/chat.py's
+                                   ChatRequest for every optional field
+                                   (session_id, document_id, web_search,
+                                   previous_question/previous_answer).
+POST /documents/upload            attach a PDF/DOCX/TXT/image to a session.
+DELETE /documents/{document_id}   drop that session's attached document.
+POST /transcribe                  one-shot speech-to-text (chat box mic).
+WS   /ws/voice                    continuous voice conversation via
+                                   Gemini Live.
+GET  /export/download/{export_id} download a generated DOCX/XLSX file.
+GET  /health                      liveness check.
 
 
 NOTES
 -----
 
-- PDF, DOCX, and TXT are accepted. Old .doc files are not supported.
-- Scanned PDFs with no text layer are rejected, because there is
-  nothing to read without OCR.
-- Each upload ADDS to the shared knowledge base. Re-uploading a file with
-  the same name and content is a no-op (nothing is re-embedded). Re-uploading
-  a file with the same name but changed content replaces just that file's
-  chunks.
-- There is no "remove a document" button. To reset the knowledge base,
-  stop the backend and delete the backend/vectorstore/ folder.
-- Chunking uses a 600-character chunk size with an 80-character overlap,
-  and retrieval pulls the top 3 most relevant chunks per question.
-  Change CHUNK_SIZE / CHUNK_OVERLAP / TOP_K in backend/services/rag_service.py.
-- Voice input (microphone) and voice output (speaker / Auto Speak) run
-  entirely in the browser via the Web Speech API - no audio is sent to the
-  backend. They only work in browsers that support that API (Chrome/Edge).
-  Unsupported browsers see the buttons disabled rather than a crash.
-
-- Two separate Gemini models are used and both are set in backend/.env:
-    GEMINI_MODEL           - generates the answer text
-    GEMINI_EMBEDDING_MODEL - turns document chunks into vectors for search
-  Their defaults ("gemini-flash-latest" and "models/gemini-embedding-001")
-  were verified to work with a real key. If you ever see "model is not
-  available for your key" for either one, list what your key can actually
-  use:
+- PDF, DOCX, TXT, and common image formats are accepted; old .doc files
+  are not. A scanned PDF with no text layer still works - it falls back
+  to Gemini image understanding instead of being rejected.
+- Uploaded documents are held in memory only (services/document_store.py)
+  and expire after DOCUMENT_TTL_SECONDS (default 3600s / 1 hour) or a
+  server restart - nothing is written to disk.
+- Chunking/retrieval knobs: PDF_CHUNK_SIZE / PDF_CHUNK_OVERLAP
+  (services/pdf_service.py, default 600/80 characters) and
+  PDF_RETRIEVAL_TOP_K (services/pdf_retrieval.py, default 3 chunks).
+- DATABASE_QUERY answers and chat memory both require SUPABASE_DB_URL/
+  PG* to be set. Without them the app still works for documents and
+  general knowledge - a database question gets an honest "no database is
+  connected" answer instead of a fabricated one, and chat memory is
+  simply not persisted between requests.
+- This project has no authentication - anyone who can reach the backend
+  can use it. services/rate_limiter.py (per-IP request throttling) is
+  the only abuse guard in place; deploy behind your own access control
+  if that matters for your use case.
+- Two Gemini models matter: GEMINI_MODEL generates answers, and Gemini's
+  own audio understanding (no separate embedding model needed anymore)
+  handles transcription. If you ever see "model is not available for
+  your key", list what your key can actually use:
 
       cd backend
       venv\Scripts\python.exe -c "import os;from dotenv import load_dotenv;from google import genai;load_dotenv();[print(m.name) for m in genai.Client(api_key=os.getenv('GEMINI_API_KEY')).models.list()]"

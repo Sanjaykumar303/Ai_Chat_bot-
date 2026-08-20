@@ -65,6 +65,91 @@
     text-decoration:underline;
 }
 
+/* Database connection-status check, right side of the navbar */
+
+.navbar-db-status-wrapper{
+    position:relative;
+    margin-left:auto;
+    flex-shrink:0;
+}
+
+.navbar-db-status-button{
+    position:relative;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    width:var(--touch-target);
+    height:var(--touch-target);
+    background:none;
+    border:none;
+    color:var(--color-text-muted);
+    border-radius:var(--radius-pill);
+    cursor:pointer;
+}
+
+.navbar-db-status-button:hover{
+    background:var(--color-surface-alt);
+    color:var(--color-text);
+}
+
+/* Persistent status dot on the icon itself - checked automatically on
+   mount (see Navbar.jsx's own mount effect) and on every click, so this
+   always reflects real, live status rather than requiring a click to
+   even find out. 🟢 connected, 🔴 disconnected, 🟡 checking/connecting -
+   no grey/idle state any more since a check always starts immediately. */
+.navbar-db-status-dot{
+    position:absolute;
+    top:6px;
+    right:6px;
+    width:8px;
+    height:8px;
+    border-radius:50%;
+    border:2px solid var(--color-surface);
+}
+
+.navbar-db-status-dot-checking{
+    background:var(--color-warning);
+}
+
+.navbar-db-status-dot-connected{
+    background:var(--color-success);
+}
+
+.navbar-db-status-dot-error{
+    background:var(--color-danger);
+}
+
+.navbar-db-status-popover{
+    position:absolute;
+    top:calc(100% + 8px);
+    right:0;
+    background:var(--color-surface);
+    border-radius:var(--radius-md);
+    box-shadow:var(--shadow-md);
+    padding:12px 14px;
+    min-width:220px;
+    max-width:280px;
+    z-index:40;
+    font-size:14px;
+}
+
+.navbar-db-status-ok{
+    color:var(--color-success);
+    font-weight:600;
+}
+
+.navbar-db-status-fail{
+    color:var(--color-danger);
+    font-weight:600;
+}
+
+.navbar-db-status-detail{
+    margin-top:4px;
+    color:var(--color-text-muted);
+    font-size:12px;
+    word-break:break-word;
+}
+
 @media (max-width: 768px){
     .navbar-menu-button{
         display:flex;

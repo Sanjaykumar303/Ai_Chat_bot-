@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { sendChatMessage, uploadDocument, deleteDocument, transcribeAudio } from "../services/api";
+import { speak, SPEECH_SYNTHESIS_SUPPORTED } from "../utils/speech";
 import Loader from "./Loader";
 import AttachmentMenu from "./AttachmentMenu";
 import CameraCapture from "./CameraCapture";
 import logo from "../assets/logo.jpg";
+import { Camera, Chat, Close, Copy, Database, Edit, File, Globe, Image, Loader as LoaderIcon, Mic, Refresh, Send, Share, Speaker, User, Waveform } from "../icons";
 
 // Feature detection happens once, at module load, since these APIs
 // don't change while the app is running.
@@ -15,8 +16,19 @@ const MIC_RECORDING_SUPPORTED =
   typeof window !== "undefined" &&
   Boolean(window.MediaRecorder);
 
-const SPEECH_SYNTHESIS_SUPPORTED =
-  typeof window !== "undefined" && "speechSynthesis" in window;
+// navigator.clipboard.writeText requires a secure context (https, or
+// localhost in dev) - present in every real deployment of this app, but
+// still feature-detected the same way every other browser API here is,
+// rather than assumed. Backs both the Copy action and the Share action's
+// clipboard fallback (see handleCopyMessage/handleShareMessage below).
+const CLIPBOARD_SUPPORTED =
+  typeof navigator !== "undefined" && Boolean(navigator.clipboard?.writeText);
+
+// The Web Share API - mainly a mobile/OS-level "send to..." sheet.
+// Absent on most desktop browsers, where handleShareMessage falls back
+// to CLIPBOARD_SUPPORTED above.
+const WEB_SHARE_SUPPORTED =
+  typeof navigator !== "undefined" && typeof navigator.share === "function";
 
 // Mirrors backend/services/pdf_service.py's PDF_MAX_BYTES (15 MB) and
 // image_service.py's IMAGE_MAX_BYTES (10 MB) - purely a fast client-side
@@ -41,72 +53,30 @@ function formatDuration(totalSeconds) {
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
 const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
-const CAMERA_MODAL_TITLES = {
-  camera: "📷 Camera",
-  live: "🎥 Live Camera",
-};
+const CAMERA_MODAL_TITLE = (
+  <>
+    <Camera size={18} /> Camera
+  </>
+);
 
-// Voice input is transcribed via Gemini's audio understanding on the
-// backend (services/transcription.py). Auto-detection is the default
-// and works well, but a manual override is still offered for anyone who
-// already knows which language they're about to speak - left on Auto
-// otherwise.
-const LANGUAGE_LABELS = {
-  en: "English",
-  ta: "Tamil",
-  kn: "Kannada",
-  bn: "Bengali",
-};
-
-const LANGUAGE_HINT_OPTIONS = [
-  { code: "auto", label: "Auto-detect" },
-  { code: "en", label: "English" },
-  { code: "ta", label: "Tamil" },
-  { code: "kn", label: "Kannada" },
-  { code: "bn", label: "Bengali" },
+// Clickable starting points shown only on the empty-chat state (see
+// "chat-empty" below) - the app supports several genuinely different
+// question types (a connected database, general knowledge, an attached
+// document, voice) with no other hint of that beyond one sentence of
+// prose above these, so a first-time user has no obvious way to discover
+// most of it. Deliberately domain-agnostic wording (no assumed table/
+// metric name like "revenue" or "students") - this app is designed to
+// work against ANY connected database's schema, not just the one
+// currently deployed (see backend/services/db_query_service.py's own
+// SQL_PROMPT), so a hardcoded business-specific example would be wrong
+// on a differently-shaped database. Clicking one fills the input for the
+// user to review/send, the same as re-editing a past question
+// (handleEditMessage below) - never auto-submits, so nothing is sent
+// (and no Gemini call made) without the user actually choosing to.
+const EXAMPLE_PROMPTS = [
+  "What data do you have access to?",
+  "What is machine learning?",
 ];
-
-function languageLabel(code) {
-  return LANGUAGE_LABELS[code] || code;
-}
-
-// Tamil script (U+0B80-U+0BFF). If any of it appears in the answer, the
-// answer is treated as Tamil; otherwise it's read as English. A plain
-// script check, not a Gemini call, matching how this app already prefers
-// deterministic, cost-free classification over an extra API call.
-const TAMIL_SCRIPT = /[஀-௿]/;
-
-function detectLanguage(text) {
-  return TAMIL_SCRIPT.test(text) ? "ta-IN" : "en-US";
-}
-
-// speechSynthesis.getVoices() can return an empty list until the
-// voiceschanged event has fired once, in some browsers. Voices are cached
-// here and refreshed whenever that event fires, so pickVoice() works
-// correctly regardless of when it's first called.
-let cachedVoices = [];
-
-if (SPEECH_SYNTHESIS_SUPPORTED) {
-  cachedVoices = window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged = () => {
-    cachedVoices = window.speechSynthesis.getVoices();
-  };
-}
-
-// Finds a voice for the given language: an exact match first (e.g.
-// "ta-IN"), then any voice for the same language regardless of region
-// (e.g. "ta-LK") - the "search for another compatible voice" fallback.
-// Returns null if nothing matches, rather than guessing.
-function pickVoice(lang) {
-  const voices = cachedVoices.length > 0 ? cachedVoices : (SPEECH_SYNTHESIS_SUPPORTED ? window.speechSynthesis.getVoices() : []);
-  const prefix = lang.split("-")[0];
-
-  return (
-    voices.find((voice) => voice.lang === lang) ||
-    voices.find((voice) => voice.lang.toLowerCase().startsWith(prefix)) ||
-    null
-  );
-}
 
 // Sources come in two shapes: {type: "document"|"database", ...} from
 // the PDF/hybrid answer paths (routes/chat.py), or plain {filename,
@@ -114,10 +84,30 @@ function pickVoice(lang) {
 // type - rendered as simple badges either way.
 function SourceBadge({ source }) {
   if (source.type === "document") {
-    return <span className="source-badge">📄 {source.filename}</span>;
+    return (
+      <span className="source-badge">
+        <File size={14} /> {source.filename}
+      </span>
+    );
   }
   if (source.type === "database") {
-    return <span className="source-badge">🗄️ Database</span>;
+    return (
+      <span className="source-badge">
+        <Database size={14} /> Database
+      </span>
+    );
+  }
+  // Web pages the backend's entity verification actually cited (see
+  // services/entity_resolution.py). Linked out rather than plain text,
+  // since the whole point of showing these is that the reader can check
+  // the entity was resolved to the right organisation.
+  if (source.type === "web") {
+    return (
+      <a className="source-badge" href={source.url} target="_blank" rel="noreferrer noopener">
+        <Globe size={14} />
+        <span className="source-badge-label">{source.title}</span>
+      </a>
+    );
   }
   return (
     <span className="source-badge">
@@ -131,143 +121,102 @@ function isImageFilename(filename) {
   return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
-// initialMessages seeds this chat session's history (see Chat.jsx,
-// which remounts ChatBox with key={sessionId} on every chat switch, so
-// this only ever runs once per session rather than needing to sync on
-// prop changes). onMessagesChange is called whenever the message list
-// changes, so Chat.jsx can persist it - ChatBox itself never touches
-// localStorage.
-function ChatBox({ initialMessages = [], onMessagesChange }) {
+// ChatBox is now purely presentational for exactly one session at a
+// time - pages/Chat.jsx renders a single instance for the active
+// session (key={session.id}, so switching sessions is a normal
+// unmount/mount of one subtree, never several DOM trees alive at once)
+// and owns every piece of state that a background request needs to
+// keep writing to after the user switches away: messages, loading,
+// error, the attachment, and the composing question are all controlled
+// props here, not local state - see Chat.jsx's own sendMessage/
+// uploadAttachment/etc. for where they're actually mutated. This
+// component's own local state is intentionally limited to things that
+// only ever make sense in the foreground for whichever session is
+// currently on screen: live mic recording, the auto-speak/web-search
+// toggles, the camera modal, and the transient copy/share feedback
+// pill - none of those have a meaningful "carry on in the background"
+// version, so resetting them on every session switch (which remounting
+// via key already does for free) is correct, not a gap.
+//
+// Real-time Voice Chat (components/VoiceChat.jsx) is the one exception
+// to "this component's own state" above: it's controlled from here (the
+// button below) but OWNED by pages/Chat.jsx, which is what lets
+// ChatSidebar.jsx's own "Voice Chat" button open the exact same
+// instance/connection rather than a second one - see Chat.jsx's own
+// voiceChatOpen state and onOpenVoiceChat/voiceChatSupported props for
+// both this component and ChatSidebar.jsx.
+function ChatBox({
+  messages,
+  loading,
+  error,
+  question,
+  attachment,
+  attachmentStatus,
+  attachmentError,
+  onQuestionChange,
+  onSubmit,
+  onErrorMessage,
+  onUploadPdf,
+  onUploadImage,
+  onCameraCapture,
+  onAttachmentValidationError,
+  onRemoveAttachment,
+  onRecordingComplete,
+  onOpenVoiceChat,
+  voiceChatSupported,
+}) {
 
-  const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState(initialMessages);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
   const [autoSpeak, setAutoSpeak] = useState(false);
-  const [detectedLanguage, setDetectedLanguage] = useState(null);
-  const [languageHint, setLanguageHint] = useState("auto");
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
 
-  // The backend's resolved_question from the last exchange in *this*
-  // chat (see routes/chat.py) - not necessarily what the user literally
-  // typed, since a follow-up like "yesterday" resolves to something like
-  // "What is the total profit yesterday?". Sent back as the next
-  // request's previous_question so a chain of follow-ups ("today" ->
-  // "yesterday" -> "and last week?") each build on the fully-expanded
-  // form of the one before it. Deliberately local component state, not
-  // persisted (see utils/chatStorage.js) - like attachment state, it
-  // resets on every chat switch (ChatBox is remounted, key=sessionId,
-  // see Chat.jsx), so a follow-up never resolves against a different
-  // chat's question.
-  const [lastResolvedQuestion, setLastResolvedQuestion] = useState(null);
-
-  // Attachment (uploaded PDF/image/camera capture) state - lives here
-  // now that there's no permanent sidebar to hold it. { documentId,
-  // filename, previewUrl } | null. previewUrl is a local object URL for
-  // images only (revoked on removal/replacement), so the compact
-  // preview can show an actual thumbnail rather than just an icon.
-  const [attachment, setAttachment] = useState(null);
-  const [attachmentStatus, setAttachmentStatus] = useState("idle"); // idle | uploading | processing | error
-  const [attachmentError, setAttachmentError] = useState("");
-  const [cameraMode, setCameraMode] = useState(null); // null | "camera" | "live"
+  // Transient "Copied!"/"Shared!"-style feedback for the per-user-message
+  // actions row below - { index, label } | null. Keyed by the message's
+  // array index (messages have no separate id, matching how the message
+  // list is already keyed for rendering below), auto-clears itself after
+  // a couple seconds via actionFeedbackTimeoutRef.
+  const [actionFeedback, setActionFeedback] = useState(null);
 
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const recordingIntervalRef = useRef(null);
-  const attachmentPreviewUrlRef = useRef(null);
+  const actionFeedbackTimeoutRef = useRef(null);
+  const questionInputRef = useRef(null);
   const messagesEndRef = useRef(null);
-  // Captured once, at construction - lets the effect below tell "still
-  // the untouched initial array" apart from "a real setMessages update
-  // happened", by reference rather than by a mutable "have I run
-  // before" flag. A flag would break under React 18 StrictMode's
-  // dev-only double-invoke of effects (it flips on the first synthetic
-  // run, so the second synthetic run - against the same, still-
-  // unchanged messages - would wrongly look like a genuine change); a
-  // stable reference snapshot gives the same, correct answer no matter
-  // how many times the effect happens to run.
-  const initialMessagesRef = useRef(initialMessages);
-
-  // Reports this session's message list up to Chat.jsx for persistence
-  // (see utils/chatStorage.js) whenever it actually changes. Skipped
-  // when messages is still the original initialMessages reference,
-  // since reporting that back unchanged would bump this chat's
-  // updatedAt (and its position in the Recent Chats list) merely from
-  // switching to it, not from any real new message. Deliberately not
-  // depending on onMessagesChange itself, since a new inline function
-  // identity from the parent every render shouldn't re-fire this.
-  useEffect(() => {
-    if (messages === initialMessagesRef.current) {
-      return;
-    }
-    onMessagesChange?.(messages);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages]);
 
   // Keeps the latest message (or the typing indicator, while a reply is
   // pending) in view automatically - without this, a long conversation
   // would leave a new reply below the fold, silently requiring the user
-  // to notice and scroll down themselves every single time.
+  // to notice and scroll down themselves every single time. Also fires
+  // on mount (a fresh instance every session switch, see the module
+  // docstring), which is exactly what's wanted: land scrolled to this
+  // session's latest state, not wherever the previous session happened
+  // to be scrolled.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, loading]);
 
-  // Stop any voice activity left running, and release any local object
-  // URL, if the user navigates away.
+  // Stop any voice activity left running, if the user switches away
+  // from this session (this whole component unmounts - see Chat.jsx's
+  // key={session.id}) or navigates off the page. Recording/speaking are
+  // both inherently foreground-only (one physical microphone, one
+  // speechSynthesis singleton) - there's no meaningful "keep going in
+  // the background for a session I've switched away from" version of
+  // either, so stopping them here is correct, not a loss of state.
   useEffect(() => {
     return () => {
       mediaRecorderRef.current?.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
       clearInterval(recordingIntervalRef.current);
+      clearTimeout(actionFeedbackTimeoutRef.current);
       if (SPEECH_SYNTHESIS_SUPPORTED) {
         window.speechSynthesis.cancel();
       }
-      if (attachmentPreviewUrlRef.current) {
-        URL.revokeObjectURL(attachmentPreviewUrlRef.current);
-      }
     };
   }, []);
-
-  // Reads a piece of text aloud, in whichever language it's actually
-  // written in. Always stops whatever is currently playing first, whether
-  // that came from a manual click, Auto Speak, or replaying an older
-  // message - language/voice are re-detected fresh every call, never
-  // cached, so replay always matches that message's real language.
-  function speak(text) {
-    if (!SPEECH_SYNTHESIS_SUPPORTED || !text) {
-      return;
-    }
-
-    const lang = detectLanguage(text);
-    const voice = pickVoice(lang);
-
-    if (lang === "ta-IN" && !voice) {
-      setError(
-        "No Tamil voice is installed on this device. Add a Tamil voice in " +
-        "your operating system's language/speech settings to hear Tamil answers read aloud."
-      );
-      return;
-    }
-
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = lang;
-    if (voice) {
-      utterance.voice = voice;
-    }
-    utterance.onerror = (event) => {
-      // "canceled"/"interrupted" fire on the utterance we just stopped with
-      // cancel() above - that's expected, not a failure, so stay quiet.
-      if (event.error === "canceled" || event.error === "interrupted") {
-        return;
-      }
-      setError("Could not read the answer aloud.");
-    };
-
-    window.speechSynthesis.speak(utterance);
-  }
 
   // Records a clip from the microphone, uploads it to the backend for
   // Gemini-based transcription (services/transcription.py), then fills
@@ -278,8 +227,7 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
       return;
     }
 
-    setError("");
-    setDetectedLanguage(null);
+    onErrorMessage("");
 
     let stream;
     try {
@@ -303,11 +251,11 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
       // actively misleading for the latter two, which no permission
       // prompt would ever fix.
       if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
-        setError("No microphone was found. Please connect a microphone and try again.");
+        onErrorMessage("No microphone was found. Please connect a microphone and try again.");
       } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
-        setError("The microphone is already in use by another application.");
+        onErrorMessage("The microphone is already in use by another application.");
       } else {
-        setError("Microphone access was denied. Please allow microphone access and try again.");
+        onErrorMessage("Microphone access was denied. Please allow microphone access and try again.");
       }
       return;
     }
@@ -322,12 +270,26 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
       }
     };
 
+    // onRecordingComplete (Chat.jsx's transcribeForSession, bound to
+    // *this* session via closure at render time) is what actually keeps
+    // the transcript landing in the right session even if the user
+    // switches away before it resolves - this component may already be
+    // unmounted by the time onstop fires (switching sessions stops any
+    // live recording, see the cleanup effect above), but the callback
+    // reference itself was captured when this instance was still
+    // mounted for this session, so it still resolves correctly. If that
+    // happens, the setTranscribing(false) below lands on an unmounted
+    // instance and is silently dropped by React - harmless, since the
+    // mic-button spinner this drives is foreground-only UI, not
+    // conversation state.
     mediaRecorder.onstop = async () => {
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
 
       const audioBlob = new Blob(chunks, { type: mediaRecorder.mimeType });
-      await sendForTranscription(audioBlob);
+      setTranscribing(true);
+      await onRecordingComplete(audioBlob);
+      setTranscribing(false);
     };
 
     mediaRecorderRef.current = mediaRecorder;
@@ -347,7 +309,7 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
         });
       }, 1000);
     } catch {
-      setError("Could not start voice input. Please try again.");
+      onErrorMessage("Could not start voice input. Please try again.");
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
@@ -359,96 +321,16 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
     clearInterval(recordingIntervalRef.current);
   }
 
-  // Uploads the recorded clip to POST /transcribe. No audio ever reaches
-  // Gemini or leaves the machine - only the resulting text does, and only
-  // once the user submits it through the existing /chat pipeline.
-  async function sendForTranscription(audioBlob) {
-    setTranscribing(true);
-
-    const formData = new FormData();
-    formData.append("audio", audioBlob, "question.webm");
-    formData.append("language_hint", languageHint);
-
-    try {
-      const response = await transcribeAudio(formData);
-      const { transcript, language } = response.data;
-      setQuestion(transcript);
-      setDetectedLanguage(language || null);
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      setError(
-        typeof detail === "string"
-          ? detail
-          : "Voice input failed. Please try again or type your question."
-      );
-    }
-
-    setTranscribing(false);
-  }
-
-  // Shared upload path for a PDF, a picked image, or a camera-captured
-  // image blob - all three are just bytes to POST /documents/upload,
-  // which already validates/branches PDF vs. image server-side
-  // (routes/documents.py). previewUrl is only ever set for images.
-  async function uploadAttachment(file, filename, previewUrl) {
-    // Replacing an existing attachment: drop the old temporary context
-    // first, so it's never left around or mistakenly reused once the
-    // new one is ready - same as the removed Sidebar's replace logic.
-    if (attachment?.documentId) {
-      try {
-        await deleteDocument(attachment.documentId);
-      } catch {
-        // Already gone/expired - fine, proceed with the new upload regardless.
-      }
-      if (attachmentPreviewUrlRef.current) {
-        URL.revokeObjectURL(attachmentPreviewUrlRef.current);
-      }
-      setAttachment(null);
-    }
-
-    setAttachmentError("");
-    setAttachmentStatus("uploading");
-    attachmentPreviewUrlRef.current = previewUrl || null;
-
-    const formData = new FormData();
-    formData.append("file", file, filename);
-
-    try {
-      // Bytes fully sent to the server means the "uploading" phase is
-      // over - what's left (extraction + chunking + indexing, or OCR
-      // for a scanned PDF/image) is "processing", which has no
-      // progress events of its own.
-      const response = await uploadDocument(formData, (progressEvent) => {
-        if (progressEvent.loaded >= progressEvent.total) {
-          setAttachmentStatus("processing");
-        }
-      });
-      const { document_id, filename: returnedFilename } = response.data;
-      setAttachment({ documentId: document_id, filename: returnedFilename, previewUrl: previewUrl || null });
-      setAttachmentStatus("idle");
-    } catch (err) {
-      const detail = err.response?.data?.detail;
-      setAttachmentStatus("error");
-      setAttachmentError(typeof detail === "string" ? detail : "Unable to process this file.");
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
-      }
-      attachmentPreviewUrlRef.current = null;
-    }
-  }
-
   function handleUploadPdf(file) {
     if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
-      setAttachmentStatus("error");
-      setAttachmentError("Only PDF files are supported.");
+      onAttachmentValidationError("Only PDF files are supported.");
       return;
     }
     if (file.size > MAX_PDF_BYTES) {
-      setAttachmentStatus("error");
-      setAttachmentError(`File is too large (max ${MAX_PDF_BYTES / (1024 * 1024)} MB).`);
+      onAttachmentValidationError(`File is too large (max ${MAX_PDF_BYTES / (1024 * 1024)} MB).`);
       return;
     }
-    uploadAttachment(file, file.name, null);
+    onUploadPdf(file);
   }
 
   function handleUploadImage(file) {
@@ -456,45 +338,121 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
     const isImage = IMAGE_EXTENSIONS.some((ext) => name.endsWith(ext)) || IMAGE_MIME_TYPES.includes(file.type);
 
     if (!isImage) {
-      setAttachmentStatus("error");
-      setAttachmentError("Only JPG, PNG, or WEBP images are supported.");
+      onAttachmentValidationError("Only JPG, PNG, or WEBP images are supported.");
       return;
     }
     if (file.size > MAX_IMAGE_BYTES) {
-      setAttachmentStatus("error");
-      setAttachmentError(`File is too large (max ${MAX_IMAGE_BYTES / (1024 * 1024)} MB).`);
+      onAttachmentValidationError(`File is too large (max ${MAX_IMAGE_BYTES / (1024 * 1024)} MB).`);
       return;
     }
-    uploadAttachment(file, file.name, URL.createObjectURL(file));
+    onUploadImage(file);
   }
 
   function handleCameraCapture(blob) {
-    setCameraMode(null);
-    const filename = `camera-capture-${Date.now()}.jpg`;
-    uploadAttachment(blob, filename, URL.createObjectURL(blob));
+    setCameraOpen(false);
+    onCameraCapture(blob);
   }
 
-  async function handleRemoveAttachment() {
-    if (attachment?.documentId) {
+  // Shows `label` next to the given user message's actions row for a
+  // couple seconds, then clears itself - shared by the Copy action and
+  // the Share action's clipboard fallback, which both need the same
+  // "it worked" confirmation.
+  function showActionFeedback(index, label) {
+    // Clears any error left over from an earlier failed copy/share on
+    // this or another message - otherwise a stale "Could not copy to
+    // clipboard." banner could keep showing under a since-succeeded
+    // action, which reads as if this one failed too.
+    onErrorMessage("");
+    clearTimeout(actionFeedbackTimeoutRef.current);
+    setActionFeedback({ index, label });
+    actionFeedbackTimeoutRef.current = setTimeout(() => setActionFeedback(null), 1800);
+  }
+
+  // Copies a user message's exact text - no markdown rendering, no
+  // trimming/reformatting, byte-for-byte what they sent.
+  async function handleCopyMessage(text, index) {
+    if (!CLIPBOARD_SUPPORTED) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      showActionFeedback(index, "Copied!");
+    } catch {
+      onErrorMessage("Could not copy to clipboard.");
+    }
+  }
+
+  // Loads a past user message back into the input for editing and
+  // resubmission - deliberately does NOT touch `messages` itself (the
+  // old message stays exactly where it is in history; resubmitting adds
+  // a new message afterward, same as typing any other question), so
+  // there's no history to keep consistent here beyond what onSubmit
+  // already does for every send.
+  function handleEditMessage(text) {
+    onQuestionChange(text);
+    onErrorMessage("");
+    questionInputRef.current?.focus();
+  }
+
+  // Re-asks the exact question that produced the AI message at `index`,
+  // by resubmitting the immediately preceding user message through the
+  // same onSubmit prop handleSubmit itself calls below - not a special
+  // "regenerate" endpoint, just asking again. Unlike handleEditMessage
+  // above, this sends immediately rather than filling the input for
+  // review first: the whole point of a one-click regenerate is not
+  // having to manually retype/resend, and the original question text is
+  // never in doubt here (unlike an edit, where the user might want to
+  // change it) - see project_ux_review_2026-08-20 memory for why this
+  // exists (a DB answer was found to occasionally give a different
+  // number for the same question; this gives a user a way to double-
+  // check one without retyping it).
+  function handleRegenerate(index) {
+    const precedingQuestion = messages[index - 1];
+    if (precedingQuestion?.sender !== "user") {
+      return;
+    }
+    onErrorMessage("");
+    onSubmit(precedingQuestion.text, autoSpeak, webSearchEnabled);
+  }
+
+  // Web Share API first (the mobile/OS "send to..." sheet) - falls back
+  // to copying the same text to the clipboard when it's unavailable
+  // (most desktop browsers), reusing the exact same feedback mechanism
+  // as handleCopyMessage so a fallback share still gets a clear "it
+  // worked" confirmation.
+  async function handleShareMessage(text, index) {
+    if (WEB_SHARE_SUPPORTED) {
       try {
-        await deleteDocument(attachment.documentId);
-      } catch {
-        // Already gone/expired on the backend - clear it from the UI regardless.
+        await navigator.share({ text });
+      } catch (err) {
+        // The user closing the native share sheet without picking
+        // anything throws AbortError - that's a cancel, not a failure.
+        if (err.name !== "AbortError") {
+          onErrorMessage("Could not share this message.");
+        }
       }
+      return;
     }
 
-    if (attachmentPreviewUrlRef.current) {
-      URL.revokeObjectURL(attachmentPreviewUrlRef.current);
-      attachmentPreviewUrlRef.current = null;
+    if (!CLIPBOARD_SUPPORTED) {
+      return;
     }
 
-    setAttachment(null);
-    setAttachmentStatus("idle");
-    setAttachmentError("");
+    try {
+      await navigator.clipboard.writeText(text);
+      showActionFeedback(index, "Copied to share!");
+    } catch {
+      onErrorMessage("Could not copy to clipboard.");
+    }
   }
 
-  // Runs when the user submits the form.
-  async function handleSubmit(event) {
+  // Runs when the user submits the form. Validates and gathers the
+  // input, then delegates the actual send (and everything after it -
+  // appending messages, the /chat request, loading/error state) to
+  // Chat.jsx's onSubmit, which is what keeps all of that alive if the
+  // user switches to another session before the response comes back.
+  function handleSubmit(event) {
 
     // Stops the browser from reloading the page.
     event.preventDefault();
@@ -502,11 +460,10 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
     // Submitting (Enter, or clicking Send) while a recording is still
     // in progress, or its transcript hasn't come back yet, isn't a
     // genuinely empty question - the question box is only empty because
-    // transcribeAudio()'s response hasn't arrived yet. Stop the
-    // recording (if any) and return without touching `error`, rather
-    // than falsely claiming nothing was typed - sendForTranscription
-    // fills the input in as soon as it resolves, and the user can
-    // submit again then.
+    // the transcription hasn't arrived yet. Stop the recording (if any)
+    // and return without touching the error, rather than falsely
+    // claiming nothing was typed - onRecordingComplete fills the input
+    // in as soon as it resolves, and the user can submit again then.
     if (recording) {
       stopRecording();
       return;
@@ -519,59 +476,11 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
     const trimmedQuestion = question.trim();
 
     if (!trimmedQuestion) {
-      setError("Please type a question.");
+      onErrorMessage("Please type a question.");
       return;
     }
 
-    // Only tag this request with a spoken language if the text still is
-    // what transcription produced - once the user edits or types their
-    // own question, detectedLanguage has already been cleared (see the
-    // input's onChange below), so a stale language never gets attached.
-    const spokenLanguage = detectedLanguage;
-
-    // Show the question straight away.
-    setMessages((previous) => [
-      ...previous,
-      { sender: "user", text: trimmedQuestion },
-    ]);
-
-    setQuestion("");
-    setDetectedLanguage(null);
-    setError("");
-    setLoading(true);
-
-    try {
-      const response = await sendChatMessage({
-        question: trimmedQuestion,
-        language: spokenLanguage,
-        document_id: attachment?.documentId ?? null,
-        previous_question: lastResolvedQuestion,
-      });
-      const { answer, sources = [], resolved_question } = response.data;
-
-      setLastResolvedQuestion(resolved_question || trimmedQuestion);
-
-      setMessages((previous) => [
-        ...previous,
-        { sender: "ai", text: answer, sources },
-      ]);
-
-      if (autoSpeak) {
-        speak(answer);
-      }
-
-    } catch (err) {
-      // FastAPI sends its error text inside response.data.detail.
-      // It is only a plain string for our own errors, so we check the type.
-      const detail = err.response?.data?.detail;
-      setError(
-        typeof detail === "string"
-          ? detail
-          : "Could not reach the server. Please check that the backend is running."
-      );
-    }
-
-    setLoading(false);
+    onSubmit(trimmedQuestion, autoSpeak, webSearchEnabled);
   }
 
   const attachmentBusy = attachmentStatus === "uploading" || attachmentStatus === "processing";
@@ -599,53 +508,181 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
 
         {messages.length === 0 && !loading && (
           <div className="chat-empty">
-            <span className="chat-empty-icon" aria-hidden="true">💬</span>
+            <Chat size={22} className="chat-empty-icon" />
             <p>Ask me anything - general knowledge, your connected database, or attach a PDF/image to ask about that too.</p>
+            <div className="chat-example-prompts">
+              {EXAMPLE_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className="chat-example-prompt"
+                  onClick={() => handleEditMessage(prompt)}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
         {messages.map((message, index) => (
-          <div key={index} className={`chat-message ${message.sender}`}>
+          <div key={index} className={`chat-message ${message.sender} ${message.streaming ? "streaming" : ""}`}>
             {message.sender === "user" ? (
-              <span className="chat-avatar chat-avatar-user" aria-hidden="true">🧑</span>
+              <span className="chat-avatar chat-avatar-user">
+                <User size={18} />
+              </span>
             ) : (
               <img className="chat-avatar chat-avatar-ai" src={logo} alt="" />
             )}
 
-            <div className="chat-message-body">
-              <span className="chat-sender">
-                {message.sender === "user" ? "You" : "Assistant"}
-              </span>
+            {/* Wraps the bubble itself and (for a user message) the
+                actions row below it, so the actions can sit outside the
+                bubble's own padding/background while still stacking
+                under it and sharing its left/right alignment - see
+                .chat-message-content in styles/Chat.css. */}
+            <div className="chat-message-content">
+              <div className="chat-message-body">
+                <span className="chat-sender">
+                  {message.sender === "user" ? "You" : "Assistant"}
+                </span>
 
-              <div className="chat-message-text">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown>
+                <div className="chat-message-text">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.text}</ReactMarkdown>
+                </div>
+
+                {message.sender === "ai" && !message.streaming && (
+                  <button
+                    type="button"
+                    className="speaker-button"
+                    onClick={() => speak(message.text, onErrorMessage)}
+                    disabled={!SPEECH_SYNTHESIS_SUPPORTED}
+                    aria-label={SPEECH_SYNTHESIS_SUPPORTED ? "Read this answer aloud" : "Voice output is not supported in this browser"}
+                    title={SPEECH_SYNTHESIS_SUPPORTED ? "Read this answer aloud" : "Voice output is not supported in this browser"}
+                  >
+                    <Speaker size={18} />
+                  </button>
+                )}
+
+                {message.sources?.length > 0 && (
+                  <p className="chat-sources">
+                    Sources:{" "}
+                    {message.sources.map((source, sourceIndex) => (
+                      <SourceBadge key={sourceIndex} source={source} />
+                    ))}
+                  </p>
+                )}
+
+                {/* A generated DOCX/XLSX export (see pages/Chat.jsx's
+                    exportInfo handling) - a plain browser download link,
+                    same .source-badge look every other small pill in
+                    this message body already uses, so this doesn't need
+                    any styling of its own. */}
+                {message.download && (
+                  <p className="chat-sources">
+                    <a
+                      className="source-badge"
+                      href={message.download.url}
+                      download={message.download.filename}
+                    >
+                      <File size={14} /> {message.download.filename}
+                    </a>
+                  </p>
+                )}
               </div>
 
-              {message.sender === "ai" && (
-                <button
-                  type="button"
-                  className="speaker-button"
-                  onClick={() => speak(message.text)}
-                  disabled={!SPEECH_SYNTHESIS_SUPPORTED}
-                  title={SPEECH_SYNTHESIS_SUPPORTED ? "Read this answer aloud" : "Voice output is not supported in this browser"}
-                >
-                  🔊
-                </button>
+              {/* ChatGPT-style per-message actions - user messages only,
+                  below the bubble rather than inside it. Hidden until
+                  hover/focus on desktop (see .chat-message-actions in
+                  styles/Chat.css), always visible on touch devices (no
+                  hover to reveal them there) via that same rule's
+                  @media (hover: none) override. */}
+              {message.sender === "user" && (
+                <div className="chat-message-actions">
+                  <button
+                    type="button"
+                    className="chat-message-action"
+                    onClick={() => handleCopyMessage(message.text, index)}
+                    disabled={!CLIPBOARD_SUPPORTED}
+                    aria-label={CLIPBOARD_SUPPORTED ? "Copy message" : "Copying is not supported in this browser"}
+                    title={CLIPBOARD_SUPPORTED ? "Copy message" : "Copying is not supported in this browser"}
+                  >
+                    <Copy size={16} />
+                  </button>
+
+                  <button
+                    type="button"
+                    className="chat-message-action"
+                    onClick={() => handleEditMessage(message.text)}
+                    disabled={recording || transcribing}
+                    aria-label="Edit message"
+                    title="Edit message"
+                  >
+                    <Edit size={16} />
+                  </button>
+
+                  <button
+                    type="button"
+                    className="chat-message-action"
+                    onClick={() => handleShareMessage(message.text, index)}
+                    disabled={!WEB_SHARE_SUPPORTED && !CLIPBOARD_SUPPORTED}
+                    aria-label="Share prompt"
+                    title="Share prompt"
+                  >
+                    <Share size={16} />
+                  </button>
+
+                  {actionFeedback?.index === index && (
+                    <span className="chat-message-action-feedback" role="status">
+                      {actionFeedback.label}
+                    </span>
+                  )}
+                </div>
               )}
 
-              {message.sources?.length > 0 && (
-                <p className="chat-sources">
-                  Sources:{" "}
-                  {message.sources.map((source, sourceIndex) => (
-                    <SourceBadge key={sourceIndex} source={source} />
-                  ))}
-                </p>
+              {message.sender === "ai" && !message.streaming && (
+                <div className="chat-message-actions">
+                  <button
+                    type="button"
+                    className="chat-message-action"
+                    onClick={() => handleCopyMessage(message.text, index)}
+                    disabled={!CLIPBOARD_SUPPORTED}
+                    aria-label={CLIPBOARD_SUPPORTED ? "Copy answer" : "Copying is not supported in this browser"}
+                    title={CLIPBOARD_SUPPORTED ? "Copy answer" : "Copying is not supported in this browser"}
+                  >
+                    <Copy size={16} />
+                  </button>
+
+                  <button
+                    type="button"
+                    className="chat-message-action"
+                    onClick={() => handleRegenerate(index)}
+                    disabled={loading || recording || transcribing}
+                    aria-label="Regenerate this answer"
+                    title="Regenerate this answer"
+                  >
+                    <Refresh size={16} />
+                  </button>
+
+                  {actionFeedback?.index === index && (
+                    <span className="chat-message-action-feedback" role="status">
+                      {actionFeedback.label}
+                    </span>
+                  )}
+                </div>
               )}
             </div>
           </div>
         ))}
 
-        {loading && <Loader text="Thinking..." />}
+        {/* Once the first streamed chunk arrives, an in-progress AI
+            message (message.streaming - see pages/Chat.jsx's sendMessage)
+            takes over as the visual "still working" indicator - showing
+            this too would duplicate it. Only shown while genuinely
+            waiting for that first chunk (or the whole thing failed
+            before any arrived at all). */}
+        {loading && !(messages[messages.length - 1]?.sender === "ai" && messages[messages.length - 1]?.streaming) && (
+          <Loader text="Thinking..." />
+        )}
 
         <div ref={messagesEndRef} />
 
@@ -659,8 +696,10 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
         </p>
       )}
 
-      {detectedLanguage && (
-        <p className="chat-detected-language">Heard: {languageLabel(detectedLanguage)}</p>
+      {webSearchEnabled && (
+        <p className="chat-web-search-indicator">
+          <Globe size={14} /> Web Search is ON - this message will be answered using fresh web results
+        </p>
       )}
 
       {(attachment || attachmentBusy || attachmentStatus === "error") && (
@@ -682,18 +721,18 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
                 <img className="attachment-preview-thumb" src={attachment.previewUrl} alt="" />
               ) : (
                 <span className="attachment-preview-icon">
-                  {isImageFilename(attachment.filename) ? "🖼️" : "📄"}
+                  {isImageFilename(attachment.filename) ? <Image size={18} /> : <File size={18} />}
                 </span>
               )}
               <span className="attachment-preview-name">{attachment.filename}</span>
               <button
                 type="button"
                 className="attachment-preview-remove"
-                onClick={handleRemoveAttachment}
+                onClick={onRemoveAttachment}
                 aria-label="Remove attachment"
                 title="Remove attachment"
               >
-                ✕
+                <Close size={16} />
               </button>
             </>
           )}
@@ -707,39 +746,32 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
           disabled={loading || attachmentBusy}
           onUploadPdf={handleUploadPdf}
           onUploadImage={handleUploadImage}
-          onOpenCamera={setCameraMode}
+          onOpenCamera={() => setCameraOpen(true)}
         />
 
         <input
+          ref={questionInputRef}
           type="text"
           value={question}
           placeholder="Ask a question"
-          onChange={(event) => {
-            setQuestion(event.target.value);
-            setDetectedLanguage(null);
-          }}
+          onChange={(event) => onQuestionChange(event.target.value)}
           disabled={loading}
         />
-
-        <select
-          className="language-select"
-          value={languageHint}
-          onChange={(event) => setLanguageHint(event.target.value)}
-          disabled={!MIC_RECORDING_SUPPORTED || loading || recording || transcribing}
-          title="Voice input language (leave on Auto-detect unless it keeps missing your language)"
-        >
-          {LANGUAGE_HINT_OPTIONS.map((option) => (
-            <option key={option.code} value={option.code}>
-              {option.label}
-            </option>
-          ))}
-        </select>
 
         <button
           type="button"
           className={`mic-button ${recording ? "recording" : ""} ${transcribing ? "transcribing" : ""}`}
           onClick={recording ? stopRecording : startRecording}
           disabled={!MIC_RECORDING_SUPPORTED || loading || transcribing}
+          aria-label={
+            !MIC_RECORDING_SUPPORTED
+              ? "Voice input is not supported in this browser"
+              : recording
+                ? "Stop recording"
+                : transcribing
+                  ? "Transcribing..."
+                  : "Speak your question"
+          }
           title={
             !MIC_RECORDING_SUPPORTED
               ? "Voice input is not supported in this browser"
@@ -750,20 +782,43 @@ function ChatBox({ initialMessages = [], onMessagesChange }) {
                   : "Speak your question"
           }
         >
-          {transcribing ? "…" : "🎤"}
+          {transcribing ? <LoaderIcon size={18} className="icon-spin" /> : <Mic size={18} />}
+        </button>
+
+        <button
+          type="button"
+          className={`web-search-button ${webSearchEnabled ? "active" : ""}`}
+          onClick={() => setWebSearchEnabled((enabled) => !enabled)}
+          aria-pressed={webSearchEnabled}
+          aria-label={webSearchEnabled ? "Web Search is on - click to turn off" : "Turn on Web Search for this message"}
+          title={webSearchEnabled ? "Web Search is on - click to turn off" : "Turn on Web Search for this message"}
+        >
+          <Globe size={18} />
+        </button>
+
+        <button
+          type="button"
+          className="voice-chat-button"
+          onClick={onOpenVoiceChat}
+          disabled={!voiceChatSupported}
+          aria-label={voiceChatSupported ? "Start real-time voice chat" : "Voice chat is not supported in this browser"}
+          title={voiceChatSupported ? "Start real-time voice chat" : "Voice chat is not supported in this browser"}
+        >
+          <Waveform size={18} />
         </button>
 
         <button type="submit" disabled={loading || recording || transcribing}>
+          {loading ? <LoaderIcon size={16} className="icon-spin" /> : <Send size={16} />}
           {loading ? "Sending..." : "Send"}
         </button>
 
       </form>
 
-      {cameraMode && (
+      {cameraOpen && (
         <CameraCapture
-          title={CAMERA_MODAL_TITLES[cameraMode]}
+          title={CAMERA_MODAL_TITLE}
           onCapture={handleCameraCapture}
-          onClose={() => setCameraMode(null)}
+          onClose={() => setCameraOpen(false)}
         />
       )}
 

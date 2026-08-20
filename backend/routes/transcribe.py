@@ -17,11 +17,6 @@ MAX_AUDIO_BYTES = 15 * 1024 * 1024
 @router.post("/transcribe", dependencies=[Depends(enforce_rate_limit)])
 async def transcribe(audio: UploadFile = File(...), language_hint: str | None = Form(None)):
 
-    # "auto" (the UI's default option) means "no hint" - only a real
-    # language code should reach transcribe_audio() as an override.
-    if language_hint == "auto":
-        language_hint = None
-
     data = await audio.read()
 
     if not data:
